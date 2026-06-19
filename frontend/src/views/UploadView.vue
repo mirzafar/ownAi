@@ -1,0 +1,183 @@
+<script setup>
+import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
+import api from '../api'
+
+const router = useRouter()
+const file = ref(null)
+const dragging = ref(false)
+const loading = ref(false)
+const progress = ref(0)
+const error = ref('')
+const inputRef = ref(null)
+
+const fileSize = computed(() => {
+  if (!file.value) return ''
+  const kb = file.value.size / 1024
+  if (kb < 1024) return `${kb.toFixed(0)} KB`
+  return `${(kb / 1024).toFixed(2)} MB`
+})
+
+function pick() { inputRef.value?.click() }
+
+function onFile(e) {
+  const f = e.target.files?.[0]
+  if (f) file.value = f
+}
+
+function onDrop(e) {
+  dragging.value = false
+  const f = e.dataTransfer?.files?.[0]
+  if (f) file.value = f
+}
+
+async function upload() {
+  if (!file.value) return
+  error.value = ''
+  loading.value = true
+  progress.value = 0
+  const form = new FormData()
+  form.append('file', file.value)
+  try {
+    const { data } = await api.post('/transcriptions', form, {
+      onUploadProgress: (e) => {
+        if (e.total) progress.value = Math.round((e.loaded / e.total) * 100)
+      }
+    })
+    router.push(`/t/${data.id}`)
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Upload failed'
+  } finally {
+    loading.value = false
+  }
+}
+
+function reset() {
+  file.value = null
+  progress.value = 0
+  if (inputRef.value) inputRef.value.value = ''
+}
+</script>
+
+<template>
+  <div class="container" style="max-width:720px;">
+    <h1 class="page-title">Upload audio</h1>
+    <p class="page-subtitle">Drag & drop an audio file or pick from disk. We'll transcribe it and run an AI analysis.</p>
+
+    <div
+      class="dropzone card"
+      :class="{ dragging, has: !!file }"
+      @dragover.prevent="dragging = true"
+      @dragleave.prevent="dragging = false"
+      @drop.prevent="onDrop"
+      @click="!file && pick()"
+    >
+      <input ref="inputRef" type="file" accept="audio/*,video/*" @change="onFile" hidden />
+
+      <div v-if="!file" class="dz-empty">
+        <div class="dz-icon">⬆️</div>
+        <h3>Drop your audio here</h3>
+        <p>or click to pick a file</p>
+        <small>MP3, WAV, M4A, OGG, WEBM, MP4 · up to 25 MB</small>
+      </div>
+
+      <div v-else class="dz-file">
+        <div class="file-icon">🎵</div>
+        <div class="file-info">
+          <div class="file-name">{{ file.name }}</div>
+          <div class="file-meta">{{ fileSize }} · {{ file.type || 'audio' }}</div>
+        </div>
+        <button class="ghost" @click.stop="reset" :disabled="loading">Remove</button>
+      </div>
+    </div>
+
+    <div v-if="loading" class="progress-wrap">
+      <div class="progress-bar">
+        <div class="progress-fill" :style="{ width: progress + '%' }"></div>
+      </div>
+      <div class="progress-text">
+        <template v-if="progress < 100">Uploading… {{ progress }}%</template>
+        <template v-else><span class="spinner"></span> Transcribing and analyzing…</template>
+      </div>
+    </div>
+
+    <div v-if="error" class="error-msg" style="margin-top:16px;">{{ error }}</div>
+
+    <div class="actions">
+      <button class="ghost" @click="router.push('/dashboard')" :disabled="loading">Cancel</button>
+      <button class="primary" :disabled="!file || loading" @click="upload">
+        <span v-if="!loading">Transcribe & analyze</span>
+        <span v-else class="row" style="gap:8px;"><span class="spinner"></span> Processing…</span>
+      </button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.dropzone {
+  margin-top: 8px;
+  border: 2px dashed var(--border-strong);
+  background: var(--surface);
+  padding: 40px 24px;
+  text-align: center;
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  cursor: pointer;
+}
+.dropzone.dragging {
+  border-color: var(--brand);
+  background: var(--brand-soft-2);
+  transform: scale(1.01);
+}
+.dropzone.has { cursor: default; padding: 24px; }
+
+.dz-empty .dz-icon {
+  font-size: 42px;
+  margin-bottom: 10px;
+}
+.dz-empty h3 { margin: 4px 0; font-size: 18px; font-weight: 700; }
+.dz-empty p { margin: 0; color: var(--text-dim); font-size: 14px; }
+.dz-empty small { display:block; margin-top: 14px; color: var(--text-muted); font-size: 12px; }
+
+.dz-file { display: flex; align-items: center; gap: 14px; text-align: left; }
+.file-icon { font-size: 36px; }
+.file-info { flex: 1; min-width: 0; }
+.file-name {
+  font-weight: 600;
+  font-size: 15px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.progress-wrap {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.progress-bar {
+  height: 8px;
+  width: 100%;
+  background: var(--surface-3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--brand-grad);
+  transition: width 0.2s ease;
+}
+.progress-text {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  display: flex; align-items: center; gap: 8px;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+</style>

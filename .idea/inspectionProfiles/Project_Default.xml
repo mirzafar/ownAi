@@ -1,0 +1,40 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="Eslint" enabled="true" level="WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="fastapi" />
+          <option value="uvicorn" />
+          <option value="sqlmodel" />
+          <option value="pydantic" />
+          <option value="python-jose" />
+          <option value="python-dotenv" />
+          <option value="pytest" />
+          <option value="httpx" />
+          <option value="alembic" />
+          <option value="asyncpg" />
+          <option value="pydantic-settings" />
+          <option value="pydantic-extra-types" />
+          <option value="redis" />
+          <option value="sqladmin" />
+          <option value="jinja2" />
+          <option value="xxhash" />
+          <option value="ujson" />
+          <option value="itsdangerous" />
+          <option value="requests" />
+          <option value="greenlet" />
+          <option value="babel" />
+          <option value="passlib" />
+          <option value="bcrypt" />
+          <option value="websockets" />
+          <option value="faststream" />
+          <option value="sqlalchemy_utils" />
+          <option value="phonenumbers" />
+          <option value="django-environ" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
