@@ -99,9 +99,47 @@ class TranscriptionOut(BaseModel):
     sales_analysis: Optional[SalesAnalysis] = None
     source: Optional[str] = None
     bitrix_call_id: Optional[str] = None
+    bitrix_chat_id: Optional[str] = None
+    bitrix_manager: str = ""
+    bitrix_manager_id: str = ""
+    bitrix_phone: str = ""
+    bitrix_direction: str = ""
+    bitrix_channel: str = ""
+    bitrix_client: str = ""
+    bitrix_call_date: Optional[datetime] = None
+    messages_count: int = 0
+    has_audio: bool = False
     status: str
     created_at: datetime
     error: Optional[str] = None
+
+
+class OperatorStat(BaseModel):
+    manager_id: str
+    manager: str
+    calls: int
+    analyzed: int
+    avg_score: Optional[float] = None
+    total_duration: int = 0
+    last_call_at: Optional[datetime] = None
+
+
+class CriterionAverage(BaseModel):
+    criterion_id: str
+    criterion_name: str
+    avg_score: float
+    samples: int
+
+
+class AnalyticsOverview(BaseModel):
+    total_calls: int
+    analyzed: int
+    avg_score: Optional[float] = None
+    total_duration: int = 0
+    sentiment_breakdown: dict = {}
+    criteria: List[CriterionAverage] = []
+    operators: List[OperatorStat] = []
+    daily: List[dict] = []
 
 
 class BitrixCall(BaseModel):
@@ -119,6 +157,26 @@ class BitrixCall(BaseModel):
 
 class BitrixCallsPage(BaseModel):
     items: List[BitrixCall]
+    total: int
+    page: int
+    page_size: int
+
+
+class BitrixChat(BaseModel):
+    id: str
+    subject: str = ""
+    channel: str = ""
+    client: str = ""
+    operator: str = ""
+    operator_id: str = ""
+    started_at: Optional[datetime] = None
+    messages_count: int = 0
+    transcription_id: Optional[str] = None
+    analyzed: bool = False
+
+
+class BitrixChatsPage(BaseModel):
+    items: List[BitrixChat]
     total: int
     page: int
     page_size: int

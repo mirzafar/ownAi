@@ -4,9 +4,10 @@ from typing import List
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from ..auth import get_current_user
-from ..database import transcriptions
+from ..database import audio_bucket, transcriptions
 from ..models import AnalysisResult, SalesAnalysis, TranscriptionOut
 from ..openai_service import analyze_transcript, transcribe_audio
 
@@ -39,6 +40,16 @@ def _doc_to_out(doc: dict) -> TranscriptionOut:
         sales_analysis=SalesAnalysis(**sales) if sales else None,
         source=doc.get("source"),
         bitrix_call_id=doc.get("bitrix_call_id"),
+        bitrix_chat_id=doc.get("bitrix_chat_id"),
+        bitrix_manager=doc.get("bitrix_manager", "") or "",
+        bitrix_manager_id=doc.get("bitrix_manager_id", "") or "",
+        bitrix_phone=doc.get("bitrix_phone", "") or "",
+        bitrix_direction=doc.get("bitrix_direction", "") or "",
+        bitrix_channel=doc.get("bitrix_channel", "") or "",
+        bitrix_client=doc.get("bitrix_client", "") or "",
+        bitrix_call_date=doc.get("bitrix_call_date"),
+        messages_count=int(doc.get("messages_count") or 0),
+        has_audio=bool(doc.get("audio_file_id")),
         status=doc.get("status", "done"),
         created_at=doc.get("created_at"),
         error=doc.get("error"),
@@ -120,6 +131,44 @@ async def delete_transcription(tid: str, user=Depends(get_current_user)) -> None
         oid = ObjectId(tid)
     except Exception:
         raise HTTPException(status_code=404, detail="Not found")
-    result = await transcriptions.delete_one({"_id": oid, "user_id": user["_id"]})
-    if result.deleted_count == 0:
+    doc = await transcriptions.find_one({"_id": oid, "user_id": user["_id"]})
+    if not doc:
         raise HTTPException(status_code=404, detail="Not found")
+    if doc.get("audio_file_id"):
+        try:
+            await audio_bucket.delete(doc["audio_file_id"])
+        except Exception:
+            pass
+    await transcriptions.delete_one({"_id": oid, "user_id": user["_id"]})
+
+
+@router.get("/{tid}/audio")
+async def stream_audio(tid: str, user=Depends(get_current_user)):
+    try:
+        oid = ObjectId(tid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Not found")
+    doc = await transcriptions.find_one(
+        {"_id": oid, "user_id": user["_id"]},
+        {"audio_file_id": 1, "audio_content_type": 1, "filename": 1},
+    )
+    if not doc or not doc.get("audio_file_id"):
+        raise HTTPException(status_code=404, detail="Аудио не сохранено")
+
+    stream = await audio_bucket.open_download_stream(doc["audio_file_id"])
+
+    async def iterator():
+        try:
+            while True:
+                chunk = await stream.readchunk()
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await stream.close()
+
+    return StreamingResponse(
+        iterator(),
+        media_type=doc.get("audio_content_type") or "audio/mpeg",
+        headers={"Content-Disposition": f'inline; filename="{doc.get("filename", "audio.mp3")}"'},
+    )

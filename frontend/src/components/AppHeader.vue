@@ -45,6 +45,10 @@ function isActive(prefix) {
       <router-link to="/calls" class="nav-link" :class="{ active: isActive('/calls') }">
         <span class="ico">☎</span><span>Звонки</span>
       </router-link>
+      <router-link to="/chats" class="nav-link" :class="{ active: isActive('/chats') }">
+        <span class="ico">💬</span><span>Чаты</span>
+        <span class="soon">скоро</span>
+      </router-link>
       <router-link to="/analyses" class="nav-link" :class="{ active: isActive('/analyses') || isActive('/t') }">
         <span class="ico">✦</span><span>Анализы</span>
       </router-link>
@@ -164,6 +168,17 @@ function isActive(prefix) {
   color: var(--brand);
 }
 .nav-link.active .ico { color: var(--text); }
+.soon {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--surface-3);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
 
 .sidebar-foot {
   margin-top: auto;

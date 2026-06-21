@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 
@@ -9,17 +9,50 @@ const item = ref(null)
 const loading = ref(true)
 const error = ref('')
 const copied = ref(false)
+const audioUrl = ref('')
 
 async function load() {
   loading.value = true
   try {
     const { data } = await api.get(`/transcriptions/${route.params.id}`)
     item.value = data
+    if (data.has_audio) await fetchAudio()
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Failed to load'
+    error.value = e.response?.data?.detail || 'Не удалось загрузить'
   } finally {
     loading.value = false
   }
+}
+
+async function fetchAudio() {
+  try {
+    const { data } = await api.get(`/transcriptions/${route.params.id}/audio`, {
+      responseType: 'blob',
+    })
+    if (audioUrl.value) URL.revokeObjectURL(audioUrl.value)
+    audioUrl.value = URL.createObjectURL(data)
+  } catch (e) {
+    // молча — плеер не покажем
+  }
+}
+
+onBeforeUnmount(() => {
+  if (audioUrl.value) URL.revokeObjectURL(audioUrl.value)
+})
+
+function fmtCallDate(s) {
+  if (!s) return ''
+  return new Date(s).toLocaleString('ru-RU', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function fmtDuration(sec) {
+  if (!sec) return ''
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${String(s).padStart(2, '0')}`
 }
 
 async function remove() {
@@ -46,6 +79,29 @@ function scoreClass(score) {
   if (score >= 40) return 'warn'
   return 'bad'
 }
+
+const chatMessages = computed(() => {
+  if (item.value?.source !== 'bitrix_chat' || !item.value?.text) return []
+  const lines = item.value.text.split(/\r?\n/)
+  const messages = []
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+    const m = line.match(/^([^:]+):\s*(.*)$/)
+    if (m) {
+      const author = m[1].trim()
+      const text = m[2]
+      const isOperator = author.toLowerCase() === 'менеджер' || author.toLowerCase() === 'оператор'
+        || (item.value.bitrix_manager && author === item.value.bitrix_manager)
+      messages.push({ author, text, mine: isOperator })
+    } else if (messages.length) {
+      messages[messages.length - 1].text += '\n' + line
+    } else {
+      messages.push({ author: '', text: line, mine: false })
+    }
+  }
+  return messages
+})
 
 onMounted(load)
 </script>
@@ -75,6 +131,68 @@ onMounted(load)
         </div>
         <div class="spacer"></div>
         <button class="danger" @click="remove">Удалить</button>
+      </div>
+
+      <div v-if="item.source === 'bitrix_chat'" class="call-card card">
+        <div class="call-grid">
+          <div v-if="item.bitrix_manager" class="call-cell">
+            <div class="call-cell-label">Оператор</div>
+            <div class="call-cell-value">
+              <div class="op-avatar-sm">{{ item.bitrix_manager[0]?.toUpperCase() }}</div>
+              {{ item.bitrix_manager }}
+            </div>
+          </div>
+          <div v-if="item.bitrix_channel" class="call-cell">
+            <div class="call-cell-label">Канал</div>
+            <div class="call-cell-value">{{ item.bitrix_channel }}</div>
+          </div>
+          <div v-if="item.bitrix_client" class="call-cell">
+            <div class="call-cell-label">Клиент</div>
+            <div class="call-cell-value">{{ item.bitrix_client }}</div>
+          </div>
+          <div v-if="item.bitrix_call_date" class="call-cell">
+            <div class="call-cell-label">Дата</div>
+            <div class="call-cell-value">{{ fmtCallDate(item.bitrix_call_date) }}</div>
+          </div>
+          <div v-if="item.messages_count" class="call-cell">
+            <div class="call-cell-label">Сообщений</div>
+            <div class="call-cell-value mono">{{ item.messages_count }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="item.source === 'bitrix_call'" class="call-card card">
+        <div class="call-grid">
+          <div v-if="item.bitrix_manager" class="call-cell">
+            <div class="call-cell-label">Оператор</div>
+            <div class="call-cell-value">
+              <div class="op-avatar-sm">{{ item.bitrix_manager[0]?.toUpperCase() }}</div>
+              {{ item.bitrix_manager }}
+            </div>
+          </div>
+          <div v-if="item.bitrix_phone" class="call-cell">
+            <div class="call-cell-label">Телефон</div>
+            <div class="call-cell-value mono">{{ item.bitrix_phone }}</div>
+          </div>
+          <div v-if="item.bitrix_direction" class="call-cell">
+            <div class="call-cell-label">Тип</div>
+            <div class="call-cell-value">{{ item.bitrix_direction }}</div>
+          </div>
+          <div v-if="item.bitrix_call_date" class="call-cell">
+            <div class="call-cell-label">Дата звонка</div>
+            <div class="call-cell-value">{{ fmtCallDate(item.bitrix_call_date) }}</div>
+          </div>
+          <div v-if="item.duration" class="call-cell">
+            <div class="call-cell-label">Длительность</div>
+            <div class="call-cell-value mono">{{ fmtDuration(item.duration) }}</div>
+          </div>
+        </div>
+        <div v-if="audioUrl" class="call-audio">
+          <audio :src="audioUrl" controls preload="metadata" style="width:100%;"></audio>
+        </div>
+        <div v-else-if="item.has_audio" class="call-audio-loading">
+          <span class="spinner"></span> Загрузка записи…
+        </div>
       </div>
 
       <div v-if="item.error" class="error-msg" style="margin-bottom:18px;">{{ item.error }}</div>
@@ -168,7 +286,28 @@ onMounted(load)
           </div>
         </div>
 
-        <div class="card transcript-card transcript-full">
+        <div v-if="item.source === 'bitrix_chat'" class="card transcript-card transcript-full">
+          <div class="card-head">
+            <h2>Переписка</h2>
+            <button class="ghost small" @click="copyText">
+              {{ copied ? '✓ Скопировано' : 'Копировать' }}
+            </button>
+          </div>
+          <div v-if="chatMessages.length" class="chat-thread">
+            <div
+              v-for="(m, i) in chatMessages"
+              :key="i"
+              class="msg"
+              :class="m.mine ? 'mine' : 'theirs'"
+            >
+              <div class="msg-author">{{ m.author || (m.mine ? 'Менеджер' : 'Клиент') }}</div>
+              <div class="msg-bubble">{{ m.text }}</div>
+            </div>
+          </div>
+          <div v-else class="empty-inline">Сообщения не найдены.</div>
+        </div>
+
+        <div v-else class="card transcript-card transcript-full">
           <div class="card-head">
             <h2>Транскрипт</h2>
             <button class="ghost small" @click="copyText">
@@ -289,6 +428,88 @@ h2 {
 .actions-list li { font-size: 14px; line-height: 1.5; }
 
 .empty-inline { color: var(--text-muted); font-size: 14px; }
+
+.call-card { margin-bottom: 18px; padding: 18px 22px; }
+.call-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.call-cell { min-width: 0; }
+.call-cell-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.call-cell-value {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 4px;
+  display: flex; align-items: center; gap: 8px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.call-cell-value.mono { font-family: 'SF Mono', Menlo, monospace; font-size: 13px; }
+.op-avatar-sm {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 700;
+  flex-shrink: 0;
+}
+.call-audio { padding-top: 8px; border-top: 1px solid var(--border); }
+.call-audio-loading {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.msg { display: flex; flex-direction: column; max-width: 78%; }
+.msg.theirs { align-self: flex-start; }
+.msg.mine { align-self: flex-end; align-items: flex-end; }
+.msg-author {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  padding: 0 4px;
+}
+.msg.mine .msg-author { color: var(--brand); }
+.msg-bubble {
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.msg.theirs .msg-bubble {
+  background: var(--surface-2);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+.msg.mine .msg-bubble {
+  background: var(--brand);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 8px 22px -10px rgba(3, 129, 254, 0.55);
+}
 
 /* ===== OKO Sales Analysis ===== */
 

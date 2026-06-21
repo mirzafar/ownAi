@@ -7,6 +7,7 @@ import DashboardView from './views/DashboardView.vue'
 import UploadView from './views/UploadView.vue'
 import TranscriptionView from './views/TranscriptionView.vue'
 import BitrixCallsView from './views/BitrixCallsView.vue'
+import BitrixChatsView from './views/BitrixChatsView.vue'
 import AnalysesView from './views/AnalysesView.vue'
 import ProfileView from './views/ProfileView.vue'
 import UsersView from './views/UsersView.vue'
@@ -17,6 +18,7 @@ const routes = [
   { path: '/register', component: RegisterView, meta: { guest: true } },
   { path: '/dashboard', component: DashboardView, meta: { auth: true } },
   { path: '/calls', component: BitrixCallsView, meta: { auth: true } },
+  { path: '/chats', component: BitrixChatsView, meta: { auth: true } },
   { path: '/bitrix', redirect: '/calls' },
   { path: '/analyses', component: AnalysesView, meta: { auth: true } },
   { path: '/upload', component: UploadView, meta: { auth: true } },
