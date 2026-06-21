@@ -1,12 +1,12 @@
 """Создаёт (или повышает до админа) пользователя ownAi.
 
 Использование:
-    # из переменных окружения
-    ADMIN_LOGIN=root ADMIN_PASSWORD=secret ADMIN_NAME="Главный" \\
-        pipenv run python seed_admin.py
-
     # из аргументов
     pipenv run python seed_admin.py admin "Admin" pwd123
+
+    # из переменных окружения
+    ADMIN_LOGIN=root ADMIN_PASSWORD=secret ADMIN_NAME='Главный' \\
+        pipenv run python seed_admin.py
 
     # интерактивно
     pipenv run python seed_admin.py
@@ -21,14 +21,17 @@ LOGIN_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 
 
 async def main() -> int:
-    # импорт внутри async-функции, чтобы motor привязался к свежему loop
-    from app.auth import hash_password
-    from app.database import ensure_indexes, users
+    # все импорты — внутри корутины, чтобы motor привязался к ТЕКУЩЕМУ loop
+    from motor.motor_asyncio import AsyncIOMotorClient
 
-    await ensure_indexes()
+    from app.auth import hash_password
+    from app.config import settings
+
+    client = AsyncIOMotorClient(settings.mongo_uri)
+    db = client[settings.mongo_db]
+    users = db["users"]
 
     args = sys.argv[1:]
-
     login = (args[0] if len(args) > 0 else os.environ.get("ADMIN_LOGIN", "")).strip().lower()
     name = (args[1] if len(args) > 1 else os.environ.get("ADMIN_NAME", "")).strip()
     password = args[2] if len(args) > 2 else os.environ.get("ADMIN_PASSWORD", "")
@@ -53,6 +56,8 @@ async def main() -> int:
         print("Пароль минимум 6 символов", file=sys.stderr)
         return 1
 
+    await users.create_index("login", unique=True)
+
     password_hash = hash_password(password)
     existing = await users.find_one({"login": login})
 
@@ -68,19 +73,21 @@ async def main() -> int:
             },
         )
         print(f"✓ @{login} обновлён и назначен админом (id={existing['_id']})")
-        return 0
+    else:
+        result = await users.insert_one(
+            {
+                "login": login,
+                "name": name,
+                "password_hash": password_hash,
+                "phone": "",
+                "email": "",
+                "address": "",
+                "is_admin": True,
+            }
+        )
+        print(f"✓ Создан админ @{login} (id={result.inserted_id})")
 
-    doc = {
-        "login": login,
-        "name": name,
-        "password_hash": password_hash,
-        "phone": "",
-        "email": "",
-        "address": "",
-        "is_admin": True,
-    }
-    result = await users.insert_one(doc)
-    print(f"✓ Создан админ @{login} (id={result.inserted_id})")
+    client.close()
     return 0
 
 
