@@ -14,7 +14,7 @@ const error = ref('')
 async function submit() {
   error.value = ''
   if (password.value.length < 6) {
-    error.value = 'Password must be at least 6 characters'
+    error.value = 'Пароль должен быть не короче 6 символов'
     return
   }
   loading.value = true
@@ -22,7 +22,7 @@ async function submit() {
     await auth.register(name.value, login.value, password.value)
     router.push('/dashboard')
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Registration failed'
+    error.value = e.response?.data?.detail || 'Ошибка регистрации'
   } finally {
     loading.value = false
   }
@@ -35,34 +35,34 @@ async function submit() {
       <div class="logo-wrap">
         <div class="logo">🎙️</div>
       </div>
-      <h1 class="title">Create your account</h1>
-      <p class="subtitle">Join <b>ownAi</b> and start analyzing audio in minutes.</p>
+      <h1 class="title">Регистрация</h1>
+      <p class="subtitle">Создайте аккаунт в <b>ownAi</b> и начните анализировать аудио.</p>
 
       <form @submit.prevent="submit" class="col" style="gap:14px;">
         <div>
-          <label class="label">Name</label>
-          <input v-model="name" type="text" placeholder="Your name" required autofocus />
+          <label class="label">Имя</label>
+          <input v-model="name" type="text" placeholder="Как к вам обращаться" required autofocus />
         </div>
         <div>
-          <label class="label">Login</label>
-          <input v-model="login" type="text" placeholder="choose a login" required autocomplete="username" />
+          <label class="label">Логин</label>
+          <input v-model="login" type="text" placeholder="выберите логин" required autocomplete="username" />
         </div>
         <div>
-          <label class="label">Password</label>
-          <input v-model="password" type="password" placeholder="At least 6 characters" required />
+          <label class="label">Пароль</label>
+          <input v-model="password" type="password" placeholder="Минимум 6 символов" required />
         </div>
 
         <div v-if="error" class="error-msg">{{ error }}</div>
 
         <button class="primary" type="submit" :disabled="loading">
-          <span v-if="!loading">Create account</span>
+          <span v-if="!loading">Создать аккаунт</span>
           <span v-else class="row" style="justify-content:center;"><span class="spinner"></span></span>
         </button>
       </form>
 
       <p class="alt">
-        Already have an account?
-        <router-link to="/login">Sign in</router-link>
+        Уже есть аккаунт?
+        <router-link to="/login">Войти</router-link>
       </p>
     </div>
   </div>

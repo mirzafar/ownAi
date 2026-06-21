@@ -30,30 +30,30 @@ async function submit() {
       <div class="logo-wrap">
         <div class="logo">🎙️</div>
       </div>
-      <h1 class="title">Welcome back</h1>
-      <p class="subtitle">Sign in to <b>ownAi</b> — transcribe and analyze your audio.</p>
+      <h1 class="title">С возвращением</h1>
+      <p class="subtitle">Вход в <b>ownAi</b> — расшифровка и анализ аудио.</p>
 
       <form @submit.prevent="submit" class="col" style="gap:14px;">
         <div>
-          <label class="label">Login</label>
-          <input v-model="login" type="text" placeholder="your login" required autofocus autocomplete="username" />
+          <label class="label">Логин</label>
+          <input v-model="login" type="text" placeholder="ваш логин" required autofocus autocomplete="username" />
         </div>
         <div>
-          <label class="label">Password</label>
+          <label class="label">Пароль</label>
           <input v-model="password" type="password" placeholder="••••••••" required />
         </div>
 
         <div v-if="error" class="error-msg">{{ error }}</div>
 
         <button class="primary" type="submit" :disabled="loading">
-          <span v-if="!loading">Sign in</span>
+          <span v-if="!loading">Войти</span>
           <span v-else class="row" style="justify-content:center;"><span class="spinner"></span></span>
         </button>
       </form>
 
       <p class="alt">
-        No account yet?
-        <router-link to="/register">Create one</router-link>
+        Нет аккаунта?
+        <router-link to="/register">Создать</router-link>
       </p>
     </div>
   </div>

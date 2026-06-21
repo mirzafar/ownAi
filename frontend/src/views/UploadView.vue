@@ -61,8 +61,8 @@ function reset() {
 
 <template>
   <div class="container" style="max-width:720px;">
-    <h1 class="page-title">Upload audio</h1>
-    <p class="page-subtitle">Drag & drop an audio file or pick from disk. We'll transcribe it and run an AI analysis.</p>
+    <h1 class="page-title">Загрузка аудио</h1>
+    <p class="page-subtitle">Перетащите файл или выберите с диска — расшифруем и сделаем анализ.</p>
 
     <div
       class="dropzone card"
@@ -76,9 +76,9 @@ function reset() {
 
       <div v-if="!file" class="dz-empty">
         <div class="dz-icon">⬆️</div>
-        <h3>Drop your audio here</h3>
-        <p>or click to pick a file</p>
-        <small>MP3, WAV, M4A, OGG, WEBM, MP4 · up to 25 MB</small>
+        <h3>Перетащите файл сюда</h3>
+        <p>или нажмите чтобы выбрать</p>
+        <small>MP3, WAV, M4A, OGG, WEBM, MP4 · до 25 МБ</small>
       </div>
 
       <div v-else class="dz-file">
@@ -87,7 +87,7 @@ function reset() {
           <div class="file-name">{{ file.name }}</div>
           <div class="file-meta">{{ fileSize }} · {{ file.type || 'audio' }}</div>
         </div>
-        <button class="ghost" @click.stop="reset" :disabled="loading">Remove</button>
+        <button class="ghost" @click.stop="reset" :disabled="loading">Убрать</button>
       </div>
     </div>
 
@@ -96,18 +96,18 @@ function reset() {
         <div class="progress-fill" :style="{ width: progress + '%' }"></div>
       </div>
       <div class="progress-text">
-        <template v-if="progress < 100">Uploading… {{ progress }}%</template>
-        <template v-else><span class="spinner"></span> Transcribing and analyzing…</template>
+        <template v-if="progress < 100">Загрузка… {{ progress }}%</template>
+        <template v-else><span class="spinner"></span> Расшифровка и анализ…</template>
       </div>
     </div>
 
     <div v-if="error" class="error-msg" style="margin-top:16px;">{{ error }}</div>
 
     <div class="actions">
-      <button class="ghost" @click="router.push('/dashboard')" :disabled="loading">Cancel</button>
+      <button class="ghost" @click="router.push('/analyses')" :disabled="loading">Отмена</button>
       <button class="primary" :disabled="!file || loading" @click="upload">
-        <span v-if="!loading">Transcribe & analyze</span>
-        <span v-else class="row" style="gap:8px;"><span class="spinner"></span> Processing…</span>
+        <span v-if="!loading">Анализировать</span>
+        <span v-else class="row" style="gap:8px;"><span class="spinner"></span> Обработка…</span>
       </button>
     </div>
   </div>

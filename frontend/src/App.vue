@@ -8,10 +8,27 @@ const showHeader = computed(() => !!route.meta?.auth)
 </script>
 
 <template>
-  <AppHeader v-if="showHeader" />
-  <router-view v-slot="{ Component }">
-    <transition name="fade" mode="out-in">
-      <component :is="Component" />
-    </transition>
-  </router-view>
+  <div class="app-shell" :class="{ 'with-sidebar': showHeader }">
+    <AppHeader v-if="showHeader" />
+    <main class="app-main">
+      <router-view v-slot="{ Component }">
+        <transition name="fade" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
+    </main>
+  </div>
 </template>
+
+<style>
+.app-shell.with-sidebar .app-main {
+  margin-left: 240px;
+  min-height: 100vh;
+}
+@media (max-width: 800px) {
+  .app-shell.with-sidebar .app-main {
+    margin-left: 0;
+    padding-top: 64px;
+  }
+}
+</style>

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import ensure_indexes
-from .routers import auth, transcriptions
+from .routers import auth, bitrix, transcriptions
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(transcriptions.router)
+app.include_router(bitrix.router)
 
 
 @app.get("/api/health")

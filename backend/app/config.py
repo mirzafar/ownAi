@@ -17,5 +17,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    bitrix_webhook_url: str = ""
+
 
 settings = Settings()

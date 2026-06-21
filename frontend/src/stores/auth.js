@@ -28,6 +28,17 @@ export const useAuthStore = defineStore('auth', {
       else localStorage.removeItem('user')
     },
 
+    async refresh() {
+      if (!this.token) return
+      try {
+        const { data } = await api.get('/auth/me')
+        this.user = data
+        this.persist()
+      } catch {
+        // 401 handled by api interceptor
+      }
+    },
+
     async login(login, password) {
       const { data } = await api.post('/auth/login-json', { login, password })
       this.token = data.access_token

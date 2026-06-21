@@ -10,6 +10,7 @@ app.use(createPinia())
 
 const auth = useAuthStore()
 auth.hydrate()
+auth.refresh()
 
 app.use(router)
 app.mount('#app')

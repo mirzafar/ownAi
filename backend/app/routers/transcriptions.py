@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from ..auth import get_current_user
 from ..database import transcriptions
-from ..models import AnalysisResult, TranscriptionOut
+from ..models import AnalysisResult, SalesAnalysis, TranscriptionOut
 from ..openai_service import analyze_transcript, transcribe_audio
 
 router = APIRouter(prefix="/api/transcriptions", tags=["transcriptions"])
@@ -29,12 +29,16 @@ ALLOWED_EXTENSIONS = {
 
 def _doc_to_out(doc: dict) -> TranscriptionOut:
     analysis = doc.get("analysis")
+    sales = doc.get("sales_analysis")
     return TranscriptionOut(
         id=str(doc["_id"]),
         filename=doc.get("filename", ""),
         duration=doc.get("duration"),
         text=doc.get("text", ""),
         analysis=AnalysisResult(**analysis) if analysis else None,
+        sales_analysis=SalesAnalysis(**sales) if sales else None,
+        source=doc.get("source"),
+        bitrix_call_id=doc.get("bitrix_call_id"),
         status=doc.get("status", "done"),
         created_at=doc.get("created_at"),
         error=doc.get("error"),
