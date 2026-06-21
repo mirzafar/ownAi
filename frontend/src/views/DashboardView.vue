@@ -117,14 +117,14 @@ onMounted(load)
     <div class="head">
       <div>
         <h1 class="page-title">Dashboard</h1>
-        <p class="page-subtitle">Аналитика по звонкам и операторам — по времени звонка.</p>
+        <p class="page-subtitle">Аналитика по звонкам и операторам</p>
       </div>
     </div>
 
     <div class="filters card">
       <div class="filter-row">
         <div class="period-block">
-          <label class="label">Период (по дате звонка)</label>
+          <label class="label">Период</label>
           <div class="date-range">
             <label class="date-input">
               <span class="cal-ico">📅</span>

@@ -10,6 +10,8 @@ const loading = ref(true)
 const error = ref('')
 const copied = ref(false)
 const audioUrl = ref('')
+const reanalyzing = ref(false)
+const retranscribing = ref(false)
 
 async function load() {
   loading.value = true
@@ -59,6 +61,34 @@ async function remove() {
   if (!confirm('Удалить этот анализ?')) return
   await api.delete(`/transcriptions/${route.params.id}`)
   router.push('/analyses')
+}
+
+async function reanalyze() {
+  if (!confirm('Запустить анализ заново по текущему тексту?')) return
+  reanalyzing.value = true
+  error.value = ''
+  try {
+    const { data } = await api.post(`/transcriptions/${route.params.id}/reanalyze`)
+    item.value = data
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Не удалось выполнить анализ'
+  } finally {
+    reanalyzing.value = false
+  }
+}
+
+async function retranscribe() {
+  if (!confirm('Заново расшифровать и проанализировать запись?')) return
+  retranscribing.value = true
+  error.value = ''
+  try {
+    const { data } = await api.post(`/transcriptions/${route.params.id}/retranscribe`)
+    item.value = data
+  } catch (e) {
+    error.value = e.response?.data?.detail || 'Не удалось выполнить транскрипцию'
+  } finally {
+    retranscribing.value = false
+  }
 }
 
 async function copyText() {
@@ -130,7 +160,28 @@ onMounted(load)
           </div>
         </div>
         <div class="spacer"></div>
-        <button class="danger" @click="remove">Удалить</button>
+        <div class="head-actions">
+          <button
+            v-if="item.has_audio"
+            class="ghost"
+            :disabled="reanalyzing || retranscribing"
+            title="Заново скачать аудио, расшифровать и проанализировать"
+            @click="retranscribe"
+          >
+            <span v-if="retranscribing" class="row" style="gap:8px;"><span class="spinner"></span> Транскрайб…</span>
+            <span v-else>↻ Транскрайб</span>
+          </button>
+          <button
+            class="ghost"
+            :disabled="reanalyzing || retranscribing"
+            title="Запустить анализ по существующему тексту"
+            @click="reanalyze"
+          >
+            <span v-if="reanalyzing" class="row" style="gap:8px;"><span class="spinner"></span> Анализ…</span>
+            <span v-else>↻ Анализ</span>
+          </button>
+          <button class="danger" :disabled="reanalyzing || retranscribing" @click="remove">Удалить</button>
+        </div>
       </div>
 
       <div v-if="item.source === 'bitrix_chat'" class="call-card card">
@@ -361,6 +412,8 @@ onMounted(load)
 
 <style scoped>
 .back { margin-bottom: 16px; padding: 8px 14px; font-size: 13px; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.head-actions button { padding: 8px 14px; font-size: 13px; }
 
 .head {
   display: flex; align-items: flex-start; gap: 16px;

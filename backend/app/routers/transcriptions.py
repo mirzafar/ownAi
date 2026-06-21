@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from ..auth import get_current_user
 from ..database import audio_bucket, transcriptions
 from ..models import AnalysisResult, SalesAnalysis, TranscriptionOut
-from ..openai_service import analyze_transcript, transcribe_audio
+from ..openai_service import analyze_sales_call, analyze_transcript, transcribe_audio
 
 router = APIRouter(prefix="/api/transcriptions", tags=["transcriptions"])
 
@@ -142,6 +142,104 @@ async def delete_transcription(tid: str, user=Depends(get_current_user)) -> None
     await transcriptions.delete_one({"_id": oid, "user_id": user["_id"]})
 
 
+async def _load_audio_bytes(file_id) -> bytes:
+    stream = await audio_bucket.open_download_stream(file_id)
+    try:
+        chunks: list[bytes] = []
+        while True:
+            chunk = await stream.readchunk()
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+
+async def _run_analysis(text: str, source: Optional[str]) -> dict:
+    """Запускает подходящий анализ и возвращает поля для $set."""
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Текст для анализа пуст")
+    if source == "bitrix_call":
+        sales = await analyze_sales_call(text, source="call")
+        return {"sales_analysis": sales.model_dump(), "analysis": None}
+    if source == "bitrix_chat":
+        sales = await analyze_sales_call(text, source="chat")
+        return {"sales_analysis": sales.model_dump(), "analysis": None}
+    analysis = await analyze_transcript(text)
+    return {"analysis": analysis.model_dump(), "sales_analysis": None}
+
+
+@router.post("/{tid}/reanalyze", response_model=TranscriptionOut)
+async def reanalyze(tid: str, user=Depends(get_current_user)) -> TranscriptionOut:
+    try:
+        oid = ObjectId(tid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Not found")
+    doc = await transcriptions.find_one({"_id": oid, "user_id": user["_id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not (doc.get("text") or "").strip():
+        raise HTTPException(status_code=400, detail="Нет текста — сначала транскрибируйте")
+
+    await transcriptions.update_one({"_id": oid}, {"$set": {"status": "processing", "error": None}})
+    try:
+        update = await _run_analysis(doc.get("text", ""), doc.get("source"))
+        update["status"] = "done"
+        update["error"] = None
+    except HTTPException:
+        await transcriptions.update_one({"_id": oid}, {"$set": {"status": "failed"}})
+        raise
+    except Exception as exc:
+        await transcriptions.update_one(
+            {"_id": oid}, {"$set": {"status": "failed", "error": str(exc)[:500]}}
+        )
+        raise HTTPException(status_code=502, detail=f"Анализ не выполнен: {exc}")
+
+    await transcriptions.update_one({"_id": oid}, {"$set": update})
+    fresh = await transcriptions.find_one({"_id": oid})
+    return _doc_to_out(fresh)
+
+
+@router.post("/{tid}/retranscribe", response_model=TranscriptionOut)
+async def retranscribe(tid: str, user=Depends(get_current_user)) -> TranscriptionOut:
+    try:
+        oid = ObjectId(tid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Not found")
+    doc = await transcriptions.find_one({"_id": oid, "user_id": user["_id"]})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not doc.get("audio_file_id"):
+        raise HTTPException(status_code=400, detail="Аудио не сохранено — повторная транскрипция невозможна")
+
+    await transcriptions.update_one({"_id": oid}, {"$set": {"status": "processing", "error": None}})
+    try:
+        audio_bytes = await _load_audio_bytes(doc["audio_file_id"])
+        text = await transcribe_audio(audio_bytes, doc.get("filename") or "audio.mp3")
+        update = await _run_analysis(text, doc.get("source"))
+        update["text"] = text
+        update["status"] = "done"
+        update["error"] = None
+    except HTTPException:
+        await transcriptions.update_one({"_id": oid}, {"$set": {"status": "failed"}})
+        raise
+    except Exception as exc:
+        await transcriptions.update_one(
+            {"_id": oid}, {"$set": {"status": "failed", "error": str(exc)[:500]}}
+        )
+        raise HTTPException(status_code=502, detail=f"Транскрипция не выполнена: {exc}")
+
+    await transcriptions.update_one({"_id": oid}, {"$set": update})
+    fresh = await transcriptions.find_one({"_id": oid})
+    return _doc_to_out(fresh)
+
+
 @router.get("/{tid}/audio")
 async def stream_audio(tid: str, user=Depends(get_current_user)):
     try:
@@ -165,7 +263,11 @@ async def stream_audio(tid: str, user=Depends(get_current_user)):
                     break
                 yield chunk
         finally:
-            await stream.close()
+            close = getattr(stream, "close", None)
+            if close is not None:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
 
     return StreamingResponse(
         iterator(),
