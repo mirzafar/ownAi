@@ -50,11 +50,6 @@ async function submit() {
           <span v-else class="row" style="justify-content:center;"><span class="spinner"></span></span>
         </button>
       </form>
-
-      <p class="alt">
-        Нет аккаунта?
-        <router-link to="/register">Создать</router-link>
-      </p>
     </div>
   </div>
 </template>
