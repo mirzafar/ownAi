@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import ProcessOverlay from '../components/ProcessOverlay.vue'
 
 const router = useRouter()
 
@@ -25,6 +26,9 @@ const analyzingId = ref(null)
 const playingId = ref(null)
 const analyzeTarget = ref(null)
 const analyzeLang = ref('ru')
+
+const ANALYZE_STAGES = ['Скачивание записи', 'Расшифровка', 'Анализ диалога']
+const procStage = ref(0)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
@@ -66,15 +70,20 @@ async function analyze() {
   const item = analyzeTarget.value
   if (!item) return
   analyzingId.value = item.id
+  procStage.value = 0
+  analyzeTarget.value = null
+  const t1 = setTimeout(() => { if (procStage.value === 0) procStage.value = 1 }, 2500)
+  const t2 = setTimeout(() => { if (procStage.value === 1) procStage.value = 2 }, 14000)
   try {
     const form = new FormData()
     form.append('language', analyzeLang.value)
     const { data } = await api.post(`/bitrix/calls/${item.id}/analyze`, form)
-    analyzeTarget.value = null
     router.push(`/t/${data.id}`)
   } catch (e) {
     error.value = e.response?.data?.detail || 'Анализ не выполнен'
   } finally {
+    clearTimeout(t1)
+    clearTimeout(t2)
     analyzingId.value = null
   }
 }
@@ -336,13 +345,20 @@ onMounted(load)
       <button class="ghost" @click="changePage(1)" :disabled="page >= totalPages || loading">Вперёд →</button>
     </div>
 
+    <ProcessOverlay
+      :visible="!!analyzingId"
+      title="Анализ звонка"
+      :stages="ANALYZE_STAGES"
+      :active-index="procStage"
+    />
+
     <div v-if="analyzeTarget" class="rt-overlay" @click.self="closeAnalyzeModal">
       <div class="rt-modal card">
         <div class="rt-head">
           <h2 class="rt-title">Анализ звонка</h2>
           <button class="ghost icon-btn" @click="closeAnalyzeModal" :disabled="!!analyzingId">✕</button>
         </div>
-        <p class="rt-sub">Выберите язык аудио — модель использует подходящий промпт для распознавания.</p>
+        <p class="rt-sub">Выберите язык аудио.</p>
         <div class="lang-options" role="radiogroup" aria-label="Язык аудио">
           <button
             type="button"

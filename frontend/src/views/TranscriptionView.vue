@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import ProcessOverlay from '../components/ProcessOverlay.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,6 +15,10 @@ const reanalyzing = ref(false)
 const retranscribing = ref(false)
 const showRetranscribeModal = ref(false)
 const retranscribeLang = ref('ru')
+
+const RETRANSCRIBE_STAGES = ['Скачивание аудио', 'Расшифровка', 'Анализ']
+const REANALYZE_STAGES = ['Анализ диалога']
+const procStage = ref(0)
 
 async function load() {
   loading.value = true
@@ -68,6 +73,7 @@ async function remove() {
 async function reanalyze() {
   if (!confirm('Запустить анализ заново по текущему тексту?')) return
   reanalyzing.value = true
+  procStage.value = 0
   error.value = ''
   try {
     const { data } = await api.post(`/transcriptions/${route.params.id}/reanalyze`)
@@ -91,16 +97,21 @@ function closeRetranscribeModal() {
 
 async function retranscribe() {
   retranscribing.value = true
+  showRetranscribeModal.value = false
+  procStage.value = 0
   error.value = ''
+  const t1 = setTimeout(() => { if (procStage.value === 0) procStage.value = 1 }, 1500)
+  const t2 = setTimeout(() => { if (procStage.value === 1) procStage.value = 2 }, 14000)
   try {
     const form = new FormData()
     form.append('language', retranscribeLang.value)
     const { data } = await api.post(`/transcriptions/${route.params.id}/retranscribe`, form)
     item.value = data
-    showRetranscribeModal.value = false
   } catch (e) {
     error.value = e.response?.data?.detail || 'Не удалось выполнить транскрипцию'
   } finally {
+    clearTimeout(t1)
+    clearTimeout(t2)
     retranscribing.value = false
   }
 }
@@ -490,13 +501,26 @@ onMounted(load)
       </div>
     </template>
 
+    <ProcessOverlay
+      :visible="retranscribing"
+      title="Повторная транскрипция"
+      :stages="RETRANSCRIBE_STAGES"
+      :active-index="procStage"
+    />
+    <ProcessOverlay
+      :visible="reanalyzing"
+      title="Повторный анализ"
+      :stages="REANALYZE_STAGES"
+      :active-index="0"
+    />
+
     <div v-if="showRetranscribeModal" class="rt-overlay" @click.self="closeRetranscribeModal">
       <div class="rt-modal card">
         <div class="rt-head">
           <h2 class="rt-title">Повторная транскрипция</h2>
           <button class="ghost icon-btn" @click="closeRetranscribeModal" :disabled="retranscribing">✕</button>
         </div>
-        <p class="rt-sub">Выберите язык аудио — модель использует подходящий промпт для распознавания.</p>
+        <p class="rt-sub">Выберите язык аудио.</p>
         <div class="lang-options" role="radiogroup" aria-label="Язык аудио">
           <button
             type="button"

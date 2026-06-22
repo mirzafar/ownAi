@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import ProcessOverlay from './ProcessOverlay.vue'
 
 const emit = defineEmits(['close'])
 const router = useRouter()
@@ -13,6 +14,18 @@ const progress = ref(0)
 const error = ref('')
 const inputRef = ref(null)
 const language = ref('ru')
+
+const STAGES = ['Загрузка файла', 'Расшифровка аудио', 'Анализ диалога']
+const stageIndex = ref(0)
+const overlayProgress = computed(() => (stageIndex.value === 0 ? progress.value : null))
+let analyzeTimer = null
+
+function clearAnalyzeTimer() {
+  if (analyzeTimer) {
+    clearTimeout(analyzeTimer)
+    analyzeTimer = null
+  }
+}
 
 const fileSize = computed(() => {
   if (!file.value) return ''
@@ -50,21 +63,34 @@ async function upload() {
   error.value = ''
   loading.value = true
   progress.value = 0
+  stageIndex.value = 0
   const form = new FormData()
   form.append('file', file.value)
   form.append('language', language.value)
   try {
     const { data } = await api.post('/transcriptions', form, {
       onUploadProgress: (e) => {
-        if (e.total) progress.value = Math.round((e.loaded / e.total) * 100)
+        if (e.total) {
+          progress.value = Math.round((e.loaded / e.total) * 100)
+          if (progress.value >= 100 && stageIndex.value === 0) {
+            stageIndex.value = 1
+            analyzeTimer = setTimeout(() => {
+              if (stageIndex.value === 1) stageIndex.value = 2
+            }, 12000)
+          }
+        }
       }
     })
+    clearAnalyzeTimer()
+    stageIndex.value = STAGES.length
     emit('close')
     router.push(`/t/${data.id}`)
   } catch (e) {
     error.value = e.response?.data?.detail || 'Не удалось загрузить файл'
   } finally {
+    clearAnalyzeTimer()
     loading.value = false
+    stageIndex.value = 0
   }
 }
 </script>
@@ -125,17 +151,15 @@ async function upload() {
         </div>
       </div>
 
-      <div v-if="loading" class="progress-wrap">
-        <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: progress + '%' }"></div>
-        </div>
-        <div class="progress-text">
-          <template v-if="progress < 100">Загрузка… {{ progress }}%</template>
-          <template v-else><span class="spinner"></span> Расшифровка и анализ…</template>
-        </div>
-      </div>
-
       <div v-if="error" class="error-msg" style="margin-top:14px;">{{ error }}</div>
+
+      <ProcessOverlay
+        :visible="loading"
+        title="Обработка записи"
+        :stages="STAGES"
+        :active-index="stageIndex"
+        :progress="overlayProgress"
+      />
 
       <div class="modal-actions">
         <button class="ghost" @click="close" :disabled="loading">Отмена</button>
