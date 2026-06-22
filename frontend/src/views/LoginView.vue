@@ -30,8 +30,8 @@ async function submit() {
       <div class="logo-wrap">
         <div class="logo">🎙️</div>
       </div>
-      <h1 class="title">С возвращением</h1>
-      <p class="subtitle">Вход в <b>ownAi</b> — расшифровка и анализ аудио.</p>
+      <h1 class="title">ownAi</h1>
+      <p class="subtitle">Вход</p>
 
       <form @submit.prevent="submit" class="col" style="gap:14px;">
         <div>
