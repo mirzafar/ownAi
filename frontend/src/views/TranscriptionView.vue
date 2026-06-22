@@ -124,6 +124,43 @@ function scoreClass(score) {
   return 'bad'
 }
 
+function critClass(score, max) {
+  if (!max) return 'bad'
+  const pct = (score / max) * 100
+  if (pct >= 80) return 'good'
+  if (pct >= 60) return 'ok'
+  if (pct >= 40) return 'warn'
+  return 'bad'
+}
+
+function gradeClass(grade) {
+  if (!grade) return ''
+  if (grade.startsWith('Эталон')) return 'good'
+  if (grade.startsWith('Хорош')) return 'ok'
+  if (grade.startsWith('Удовлет')) return 'warn'
+  return 'bad'
+}
+
+const criteriaByCategory = computed(() => {
+  const list = item.value?.sales_analysis?.criteria_scores || []
+  const groups = []
+  const seen = new Map()
+  for (const c of list) {
+    const key = c.category_id || 'other'
+    if (!seen.has(key)) {
+      const g = { id: key, name: c.category_name || 'Прочее', items: [] }
+      seen.set(key, g)
+      groups.push(g)
+    }
+    seen.get(key).items.push(c)
+  }
+  return groups
+})
+
+const stopFactorsTriggered = computed(
+  () => (item.value?.sales_analysis?.stop_factors || []).filter(s => s.triggered)
+)
+
 const chatMessages = computed(() => {
   if (item.value?.source !== 'bitrix_chat' || !item.value?.text) return []
   const lines = item.value.text.split(/\r?\n/)
@@ -266,8 +303,11 @@ onMounted(load)
       <template v-if="item.sales_analysis">
         <div class="oko-hero card">
           <div class="oko-hero-left">
-            <div class="oko-tag">OKO Systems · Аудит коммуникации</div>
+            <div class="oko-tag">Swiss Collection by RAAF Group · Карта оценки звонка</div>
             <p class="oko-verdict">{{ item.sales_analysis.meta.system_verdict || '—' }}</p>
+            <div v-if="item.sales_analysis.meta.grade" class="oko-grade" :class="gradeClass(item.sales_analysis.meta.grade)">
+              {{ item.sales_analysis.meta.grade }}
+            </div>
           </div>
           <div class="oko-score" :class="scoreClass(item.sales_analysis.meta.total_score)">
             <svg viewBox="0 0 100 100" class="score-ring">
@@ -307,26 +347,54 @@ onMounted(load)
           </div>
         </div>
 
+        <div v-if="stopFactorsTriggered.length" class="card stop-card">
+          <h2>Стоп-факторы</h2>
+          <div class="stop-list">
+            <div
+              v-for="s in stopFactorsTriggered"
+              :key="s.factor_id"
+              class="stop-item"
+            >
+              <div class="stop-head">
+                <span class="stop-name">{{ s.name }}</span>
+                <span class="stop-penalty">−{{ s.penalty }}</span>
+              </div>
+              <div v-if="s.comment" class="stop-comment">{{ s.comment }}</div>
+            </div>
+          </div>
+        </div>
+
         <div class="card criteria-card">
           <h2>Оценка по критериям</h2>
-          <div class="criteria-list">
+          <div class="cat-list">
             <div
-              v-for="c in item.sales_analysis.criteria_scores"
-              :key="c.criterion_id"
-              class="crit"
+              v-for="g in criteriaByCategory"
+              :key="g.id"
+              class="cat-block"
             >
-              <div class="crit-head">
-                <div class="crit-name">{{ c.criterion_name }}</div>
-                <div class="crit-score" :class="scoreClass(c.score)">{{ c.score }}</div>
-              </div>
-              <div class="crit-bar">
+              <div class="cat-title">{{ g.name }}</div>
+              <div class="criteria-list">
                 <div
-                  class="crit-bar-fill"
-                  :class="scoreClass(c.score)"
-                  :style="{ width: c.score + '%' }"
-                ></div>
+                  v-for="c in g.items"
+                  :key="c.criterion_id"
+                  class="crit"
+                >
+                  <div class="crit-head">
+                    <div class="crit-name">{{ c.criterion_name }}</div>
+                    <div class="crit-score" :class="critClass(c.score, c.max_score)">
+                      {{ c.score }} / {{ c.max_score }}
+                    </div>
+                  </div>
+                  <div class="crit-bar">
+                    <div
+                      class="crit-bar-fill"
+                      :class="critClass(c.score, c.max_score)"
+                      :style="{ width: (c.max_score ? (c.score / c.max_score) * 100 : 0) + '%' }"
+                    ></div>
+                  </div>
+                  <div v-if="c.comment" class="crit-comment">{{ c.comment }}</div>
+                </div>
               </div>
-              <div v-if="c.comment" class="crit-comment">{{ c.comment }}</div>
             </div>
           </div>
         </div>
@@ -642,6 +710,40 @@ h2 {
   color: var(--text);
   margin: 0;
 }
+.oko-grade {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.oko-grade.good { color: var(--success); background: var(--success-soft); }
+.oko-grade.ok { color: var(--brand); background: var(--brand-soft); }
+.oko-grade.warn { color: var(--warn); background: var(--warn-soft); }
+.oko-grade.bad { color: var(--danger); background: var(--danger-soft); }
+
+.stop-card { margin-bottom: 18px; border-left: 4px solid var(--danger); }
+.stop-list { display: flex; flex-direction: column; gap: 12px; }
+.stop-item {
+  padding: 12px 14px;
+  background: var(--danger-soft);
+  border-radius: var(--radius);
+}
+.stop-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px;
+}
+.stop-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.stop-penalty {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.stop-comment { font-size: 13px; color: var(--text-dim); margin-top: 6px; line-height: 1.45; }
 
 .oko-score {
   position: relative;
@@ -727,6 +829,18 @@ h2 {
 .sw-list.weaknesses .sw-mark { background: var(--danger-soft); color: var(--danger); }
 
 .criteria-card { margin-bottom: 18px; }
+.cat-list { display: flex; flex-direction: column; gap: 22px; }
+.cat-block { padding-top: 4px; }
+.cat-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--brand);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
 .criteria-list {
   display: flex;
   flex-direction: column;
@@ -736,13 +850,16 @@ h2 {
 .crit-head {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 8px;
+  gap: 12px;
 }
-.crit-name { font-size: 14px; font-weight: 600; }
+.crit-name { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; }
 .crit-score {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   padding: 2px 10px;
   border-radius: 999px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .crit-score.good { color: var(--success); background: var(--success-soft); }
 .crit-score.ok { color: var(--brand); background: var(--brand-soft); }

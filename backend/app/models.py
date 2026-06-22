@@ -63,7 +63,18 @@ class AnalysisResult(BaseModel):
 class CriterionScore(BaseModel):
     criterion_id: str
     criterion_name: str
+    category_id: str = ""
+    category_name: str = ""
     score: int
+    max_score: int = 100
+    comment: str = ""
+
+
+class StopFactor(BaseModel):
+    factor_id: str
+    name: str
+    penalty: int
+    triggered: bool = False
     comment: str = ""
 
 
@@ -76,6 +87,7 @@ class CoachingTask(BaseModel):
 class SalesAnalysisMeta(BaseModel):
     system_verdict: str
     total_score: int
+    grade: str = ""
 
 
 class SalesAnalysisBlock(BaseModel):
@@ -87,6 +99,7 @@ class SalesAnalysis(BaseModel):
     meta: SalesAnalysisMeta
     analysis: SalesAnalysisBlock
     criteria_scores: List[CriterionScore] = []
+    stop_factors: List[StopFactor] = []
     ai_coaching_tasks: List[CoachingTask] = []
 
 

@@ -13,6 +13,7 @@ from .models import (
     SalesAnalysis,
     SalesAnalysisBlock,
     SalesAnalysisMeta,
+    StopFactor,
 )
 
 _client: Optional[AsyncOpenAI] = None
@@ -141,58 +142,137 @@ async def analyze_transcript(text: str) -> AnalysisResult:
     )
 
 
-SALES_ANALYSIS_PROMPT = (
-    "You are the core AI Intelligence Engine of \"OKO Systems\" — an advanced "
-    "conversational analytics and sales quality control platform. Твоя задача — "
-    "провести глубокий аудит коммуникации между менеджером и клиентом.\n\n"
-    "КРИТЕРИИ ОЦЕНКИ (шкала 0–100):\n"
-    "1. greeting — Приветствие и установление контакта\n"
-    "2. needs_discovery — Выявление потребности клиента\n"
-    "3. presentation — Презентация продукта / объекта\n"
-    "4. objections — Работа с возражениями (если возражений не было — score=100, в комментарии «возражений не возникло»)\n"
-    "5. whatsapp_quality — Скорость и качество ответов в WhatsApp (для звонков ставь 100 и пометь «не применимо»)\n"
-    "6. next_step — Назначение следующего шага (чёткая дата/время/действие)\n"
-    "7. closure — Закрытие коммуникации\n\n"
-    "ЛОГИКА ЗАДАЧ: если по критическому критерию (needs_discovery, objections, next_step) "
-    "оценка ниже 75 — обязательно добавь конкретную, измеримую задачу в ai_coaching_tasks.\n\n"
-    "ОГРАНИЧЕНИЯ:\n"
-    "- Верни ТОЛЬКО валидный JSON-объект, без markdown-обёрток.\n"
-    "- Все тексты (вердикт, комментарии, задачи) — на русском языке.\n"
-    "- Структура JSON:\n"
-    "{\n"
-    "  \"meta\": {\"system_verdict\": str, \"total_score\": int},\n"
-    "  \"analysis\": {\"strengths\": [str], \"weaknesses\": [str]},\n"
-    "  \"criteria_scores\": [{\"criterion_id\": str, \"criterion_name\": str, \"score\": int, \"comment\": str}],\n"
-    "  \"ai_coaching_tasks\": [{\"title\": str, \"focus_area\": str, \"action_item\": str}]\n"
-    "}\n"
-)
-
-_CRITERIA_NAMES = {
-    "greeting": "Приветствие и установление контакта",
-    "needs_discovery": "Выявление потребности клиента",
-    "presentation": "Презентация продукта / объекта",
+_CATEGORIES = {
+    "opening": "Открытие звонка",
+    "qualification": "Квалификация",
+    "presentation": "Презентация объекта",
     "objections": "Работа с возражениями",
-    "whatsapp_quality": "Скорость и качество ответов в WhatsApp",
-    "next_step": "Назначение следующего шага",
-    "closure": "Закрытие коммуникации",
+    "closing": "Закрытие и следующий шаг",
 }
 
+# (criterion_id, criterion_name, category_id, max_score)
+_RUBRIC: list[tuple[str, str, str, int]] = [
+    ("greeting", "Приветствие и позиционирование", "opening", 5),
+    ("contact", "Установление контакта", "opening", 5),
+    ("call_purpose", "Цель звонка", "opening", 5),
+    ("budget", "Бюджет и формат покупки", "qualification", 10),
+    ("purchase_goal", "Цель покупки", "qualification", 10),
+    ("decision_timeline", "Сроки принятия решения", "qualification", 10),
+    ("decision_maker", "ЛПР (лицо, принимающее решение)", "qualification", 10),
+    ("property_params", "Площадь и параметры объекта", "qualification", 10),
+    ("qualification_summary", "Резюмирование квалификации", "qualification", 10),
+    ("relevance", "Соответствие запросу клиента", "presentation", 10),
+    ("premium_language", "Премиальный язык", "presentation", 10),
+    ("competitive_edge", "Конкурентные преимущества", "presentation", 5),
+    ("financial_argumentation", "Финансовая аргументация", "presentation", 5),
+    ("objection_reaction", "Реакция на возражение", "objections", 5),
+    ("objection_arguments", "Аргументация возражений", "objections", 5),
+    ("objection_closure", "Закрытие возражения", "objections", 5),
+    ("close_attempt", "Попытка закрытия на встречу / бронь", "closing", 10),
+    ("commitment_fix", "Договорённость зафиксирована", "closing", 5),
+    ("call_ending", "Завершение звонка", "closing", 5),
+]
 
-def _clamp_score(value) -> int:
+# (factor_id, name, penalty)
+_STOP_FACTORS: list[tuple[str, str, int]] = [
+    ("filler_words", "Слова-паразиты и непрофессионализм", 5),
+    ("unauthorized_discount", "Торговля скидкой без согласования с РОПом", 10),
+    ("loss_of_control", "Потеря контроля над диалогом", 5),
+    ("no_next_step", "Звонок завершён без следующего шага", 15),
+]
+
+# Критические подкритерии — если score < половины max_score, добавляем задачу.
+_CRITICAL_CRITERIA = {"decision_timeline", "qualification_summary", "close_attempt"}
+
+
+def _grade_for(score: int) -> str:
+    if score >= 90:
+        return "Эталонный"
+    if score >= 75:
+        return "Хороший"
+    if score >= 60:
+        return "Удовлетворительно"
+    return "Неудовлетворительно"
+
+
+def _build_sales_prompt() -> str:
+    lines: list[str] = [
+        "Ты — AI-аудитор продаж для проекта Swiss Collection by RAAF Group.",
+        "Проведи аудит телефонного звонка менеджера по продажам недвижимости",
+        "строго по приведённой ниже карте оценки (19 критериев + 4 стоп-фактора).",
+        "",
+        "КРИТЕРИИ (по каждому начисли целое число от 0 до max баллов):",
+        "",
+    ]
+    cur_category: Optional[str] = None
+    cat_index = 0
+    for cid, name, cat_id, max_score in _RUBRIC:
+        if cat_id != cur_category:
+            cat_index += 1
+            cur_category = cat_id
+            lines.append(f"{cat_index}. {_CATEGORIES[cat_id].upper()}")
+        lines.append(f"   - {cid} [max {max_score}] {name}")
+    lines += [
+        "",
+        "СТОП-ФАКТОРЫ (если триггерится — penalty вычитается из total_score; если нет — triggered=false, penalty не вычитается):",
+    ]
+    for fid, name, penalty in _STOP_FACTORS:
+        lines.append(f"   - {fid} [-{penalty}] {name}")
+    lines += [
+        "",
+        "ШКАЛА ОЦЕНКИ (для поля grade):",
+        "   - «Эталонный» — 90–100",
+        "   - «Хороший» — 75–89",
+        "   - «Удовлетворительно» — 60–74",
+        "   - «Неудовлетворительно» — менее 60",
+        "",
+        "ЛОГИКА ЗАДАЧ: для критических критериев (decision_timeline, qualification_summary, close_attempt) "
+        "при оценке ниже половины max — обязательно добавь конкретную задачу в ai_coaching_tasks.",
+        "",
+        "ОГРАНИЧЕНИЯ:",
+        "- Верни ТОЛЬКО валидный JSON-объект (без markdown).",
+        "- Все тексты — на русском языке.",
+        "- В criteria_scores верни ВСЕ 19 критериев в указанном порядке, без пропусков.",
+        "- Если критерий не наблюдался в звонке — score=0 и в comment: «не наблюдалось».",
+        "- В stop_factors верни ВСЕ 4 стоп-фактора. Для не сработавших — triggered=false с пустым comment.",
+        "- total_score = sum(score) − sum(penalty по triggered=true стоп-факторам), затем clamp 0..100.",
+        "- Структура JSON:",
+        "{",
+        '  "meta": {"system_verdict": str, "total_score": int, "grade": str},',
+        '  "analysis": {"strengths": [str], "weaknesses": [str]},',
+        '  "criteria_scores": [{"criterion_id": str, "criterion_name": str, "category_id": str, "category_name": str, "score": int, "max_score": int, "comment": str}],',
+        '  "stop_factors": [{"factor_id": str, "name": str, "penalty": int, "triggered": bool, "comment": str}],',
+        '  "ai_coaching_tasks": [{"title": str, "focus_area": str, "action_item": str}]',
+        "}",
+    ]
+    return "\n".join(lines)
+
+
+SALES_ANALYSIS_PROMPT = _build_sales_prompt()
+
+_RUBRIC_INDEX = {cid: (name, cat_id, max_score) for cid, name, cat_id, max_score in _RUBRIC}
+_STOP_INDEX = {fid: (name, penalty) for fid, name, penalty in _STOP_FACTORS}
+
+
+def _to_int(value, default: int = 0) -> int:
     try:
-        n = int(value)
+        return int(value)
     except (TypeError, ValueError):
-        return 0
-    return max(0, min(100, n))
+        return default
+
+
+def _clamp(value: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, value))
 
 
 async def analyze_sales_call(text: str, source: str = "call") -> SalesAnalysis:
     safe_text = (text or "").strip()
     if not safe_text:
         return SalesAnalysis(
-            meta=SalesAnalysisMeta(system_verdict="Транскрипт пуст.", total_score=0),
+            meta=SalesAnalysisMeta(system_verdict="Транскрипт пуст.", total_score=0, grade=_grade_for(0)),
             analysis=SalesAnalysisBlock(),
             criteria_scores=[],
+            stop_factors=[],
             ai_coaching_tasks=[],
         )
 
@@ -219,19 +299,51 @@ async def analyze_sales_call(text: str, source: str = "call") -> SalesAnalysis:
     meta_raw = data.get("meta") or {}
     analysis_raw = data.get("analysis") or {}
     criteria_raw = data.get("criteria_scores") or []
+    stop_raw = data.get("stop_factors") or []
     tasks_raw = data.get("ai_coaching_tasks") or []
 
-    criteria: list[CriterionScore] = []
+    by_id: dict[str, dict] = {}
     for c in criteria_raw:
-        if not isinstance(c, dict):
-            continue
-        cid = str(c.get("criterion_id", "")).strip() or "unknown"
+        if isinstance(c, dict):
+            cid = str(c.get("criterion_id", "")).strip()
+            if cid:
+                by_id[cid] = c
+
+    criteria: list[CriterionScore] = []
+    for cid, name, cat_id, max_score in _RUBRIC:
+        raw = by_id.get(cid) or {}
+        score = _clamp(_to_int(raw.get("score")), 0, max_score)
+        comment = str(raw.get("comment") or ("не наблюдалось" if cid not in by_id else "")).strip()
         criteria.append(
             CriterionScore(
                 criterion_id=cid,
-                criterion_name=str(c.get("criterion_name") or _CRITERIA_NAMES.get(cid, cid)).strip(),
-                score=_clamp_score(c.get("score")),
-                comment=str(c.get("comment", "")).strip(),
+                criterion_name=str(raw.get("criterion_name") or name).strip(),
+                category_id=cat_id,
+                category_name=_CATEGORIES.get(cat_id, ""),
+                score=score,
+                max_score=max_score,
+                comment=comment,
+            )
+        )
+
+    stop_by_id: dict[str, dict] = {}
+    for s in stop_raw:
+        if isinstance(s, dict):
+            fid = str(s.get("factor_id", "")).strip()
+            if fid:
+                stop_by_id[fid] = s
+
+    stop_factors: list[StopFactor] = []
+    for fid, name, penalty in _STOP_FACTORS:
+        raw = stop_by_id.get(fid) or {}
+        triggered = bool(raw.get("triggered"))
+        stop_factors.append(
+            StopFactor(
+                factor_id=fid,
+                name=str(raw.get("name") or name).strip(),
+                penalty=penalty,
+                triggered=triggered,
+                comment=str(raw.get("comment") or "").strip(),
             )
         )
 
@@ -247,20 +359,22 @@ async def analyze_sales_call(text: str, source: str = "call") -> SalesAnalysis:
             )
         )
 
-    total = meta_raw.get("total_score")
-    if not isinstance(total, (int, float)):
-        applicable = [c.score for c in criteria if c.criterion_id != "whatsapp_quality" or source != "call"]
-        total = round(sum(applicable) / len(applicable)) if applicable else 0
+    earned = sum(c.score for c in criteria)
+    penalty = sum(sf.penalty for sf in stop_factors if sf.triggered)
+    total_score = _clamp(earned - penalty, 0, 100)
+    grade = _grade_for(total_score)
 
     return SalesAnalysis(
         meta=SalesAnalysisMeta(
             system_verdict=str(meta_raw.get("system_verdict", "")).strip(),
-            total_score=_clamp_score(total),
+            total_score=total_score,
+            grade=grade,
         ),
         analysis=SalesAnalysisBlock(
             strengths=[str(s).strip() for s in (analysis_raw.get("strengths") or []) if str(s).strip()][:10],
             weaknesses=[str(s).strip() for s in (analysis_raw.get("weaknesses") or []) if str(s).strip()][:10],
         ),
         criteria_scores=criteria,
+        stop_factors=stop_factors,
         ai_coaching_tasks=tasks[:10],
     )
