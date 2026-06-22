@@ -109,6 +109,7 @@ class TranscriptionOut(BaseModel):
     bitrix_call_date: Optional[datetime] = None
     messages_count: int = 0
     has_audio: bool = False
+    language: Optional[str] = None
     status: str
     created_at: datetime
     error: Optional[str] = None

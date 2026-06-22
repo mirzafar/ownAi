@@ -23,6 +23,8 @@ const dateFrom = ref(todayISO())
 const dateTo = ref(todayISO())
 const analyzingId = ref(null)
 const playingId = ref(null)
+const analyzeTarget = ref(null)
+const analyzeLang = ref('ru')
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
@@ -50,10 +52,25 @@ async function load() {
   }
 }
 
-async function analyze(item) {
+function openAnalyzeModal(item) {
+  analyzeTarget.value = item
+  analyzeLang.value = 'ru'
+}
+
+function closeAnalyzeModal() {
+  if (analyzingId.value) return
+  analyzeTarget.value = null
+}
+
+async function analyze() {
+  const item = analyzeTarget.value
+  if (!item) return
   analyzingId.value = item.id
   try {
-    const { data } = await api.post(`/bitrix/calls/${item.id}/analyze`)
+    const form = new FormData()
+    form.append('language', analyzeLang.value)
+    const { data } = await api.post(`/bitrix/calls/${item.id}/analyze`, form)
+    analyzeTarget.value = null
     router.push(`/t/${data.id}`)
   } catch (e) {
     error.value = e.response?.data?.detail || 'Анализ не выполнен'
@@ -298,7 +315,7 @@ onMounted(load)
             class="action-icon analyze"
             :disabled="!item.record_url || analyzingId === item.id"
             :title="item.record_url ? 'Анализировать' : 'Нет записи'"
-            @click="analyze(item)"
+            @click="openAnalyzeModal(item)"
           >
             <span v-if="analyzingId === item.id" class="spinner"></span>
             <svg v-else viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -317,6 +334,39 @@ onMounted(load)
       <button class="ghost" @click="changePage(-1)" :disabled="page === 1 || loading">← Назад</button>
       <span class="pager-info">Стр. {{ page }} из {{ totalPages }}</span>
       <button class="ghost" @click="changePage(1)" :disabled="page >= totalPages || loading">Вперёд →</button>
+    </div>
+
+    <div v-if="analyzeTarget" class="rt-overlay" @click.self="closeAnalyzeModal">
+      <div class="rt-modal card">
+        <div class="rt-head">
+          <h2 class="rt-title">Анализ звонка</h2>
+          <button class="ghost icon-btn" @click="closeAnalyzeModal" :disabled="!!analyzingId">✕</button>
+        </div>
+        <p class="rt-sub">Выберите язык аудио — модель использует подходящий промпт для распознавания.</p>
+        <div class="lang-options" role="radiogroup" aria-label="Язык аудио">
+          <button
+            type="button"
+            class="lang-chip"
+            :class="{ active: analyzeLang === 'ru' }"
+            :disabled="!!analyzingId"
+            @click="analyzeLang = 'ru'"
+          >Русский</button>
+          <button
+            type="button"
+            class="lang-chip"
+            :class="{ active: analyzeLang === 'kk' }"
+            :disabled="!!analyzingId"
+            @click="analyzeLang = 'kk'"
+          >Қазақша</button>
+        </div>
+        <div class="rt-actions">
+          <button class="ghost" @click="closeAnalyzeModal" :disabled="!!analyzingId">Отмена</button>
+          <button class="primary" :disabled="!!analyzingId" @click="analyze">
+            <span v-if="analyzingId" class="row" style="gap:8px;"><span class="spinner"></span> Запуск…</span>
+            <span v-else>Запустить</span>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -587,4 +637,41 @@ onMounted(load)
   .col-record { align-items: flex-start; }
   .col-actions { grid-column: 1 / -1; align-items: flex-start; justify-content: flex-start; }
 }
+
+.rt-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.45);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.rt-modal { width: 100%; max-width: 460px; padding: 24px 26px; }
+.rt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.rt-title { font-size: 18px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
+.icon-btn { padding: 6px 12px; font-size: 14px; }
+.rt-sub { color: var(--text-dim); font-size: 13.5px; margin: 6px 0 16px; line-height: 1.5; }
+.rt-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
+
+.lang-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.lang-chip {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.lang-chip:hover:not(:disabled) { border-color: var(--brand); }
+.lang-chip.active {
+  background: var(--brand-soft-2);
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.lang-chip:disabled { opacity: .6; cursor: not-allowed; }
 </style>

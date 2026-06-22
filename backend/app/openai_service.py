@@ -45,15 +45,55 @@ async def convert_mpeg_bytes_to_ogg(value: bytes) -> bytes:
     return stdout
 
 
-async def transcribe_audio(file_bytes: bytes, filename: str) -> str:
+TRANSCRIPTION_INSTRUCTIONS = {
+    "kk": (
+        "Бұл аудио қазақ тілінде.\n\n"
+        "Міндетің:\n"
+        "- Аудионы нақты және толық транскрипциялау.\n"
+        "- Мәтінді тек қазақ тілінде жазу.\n"
+        "- Ешқандай аударма жасамау.\n"
+        "- Өз ойыңды қоспау.\n"
+        "- Қысқартпай, мағынасын өзгертпей жазу.\n"
+        "- Паразит сөздерді алып тастау (мысалы: \"ммм\", \"эээ\", \"яғни\" егер мағынаға әсер етпесе).\n"
+        "- Сөйлемдерді табиғи түрде бөлу.\n"
+        "- Қосымша түсіндірме жазба.\n\n"
+        "Тек таза транскрипцияны қайтар."
+    ),
+    "ru": (
+        "Аудио на русском языке.\n\n"
+        "Твоя задача:\n"
+        "- Сделать точную транскрипцию.\n"
+        "- Разделить спикеров как \"Спикер 1:\", \"Спикер 2:\".\n"
+        "- Не переводить текст.\n"
+        "- Не добавлять комментарии.\n"
+        "- Не делать анализ.\n"
+        "- Вернуть только транскрипцию.\n\n"
+        "Без пояснений."
+    ),
+}
+
+SUPPORTED_TRANSCRIPTION_LANGUAGES = set(TRANSCRIPTION_INSTRUCTIONS.keys())
+
+
+def normalize_language(value: Optional[str]) -> str:
+    code = (value or "").strip().lower()
+    if code in SUPPORTED_TRANSCRIPTION_LANGUAGES:
+        return code
+    return "ru"
+
+
+async def transcribe_audio(file_bytes: bytes, filename: str, language: Optional[str] = None) -> str:
     client = get_client()
     ogg_bytes = await convert_mpeg_bytes_to_ogg(file_bytes)
     buf = BytesIO(ogg_bytes)
     buf.name = "audio.ogg"
+    lang = normalize_language(language)
     result = await client.audio.transcriptions.create(
         model=settings.openai_transcribe_model,
         file=buf,
         response_format="text",
+        language=lang,
+        prompt=TRANSCRIPTION_INSTRUCTIONS[lang],
     )
     if isinstance(result, str):
         return result
