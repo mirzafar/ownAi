@@ -2,23 +2,23 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
-import ProcessOverlay from '../components/ProcessOverlay.vue'
+import { useTasksStore } from '../stores/tasks'
 
 const route = useRoute()
 const router = useRouter()
+const tasks = useTasksStore()
 const item = ref(null)
 const loading = ref(true)
 const error = ref('')
 const copied = ref(false)
 const audioUrl = ref('')
-const reanalyzing = ref(false)
-const retranscribing = ref(false)
-const showRetranscribeModal = ref(false)
-const retranscribeLang = ref('ru')
 
-const RETRANSCRIBE_STAGES = ['Скачивание аудио', 'Расшифровка', 'Анализ']
-const REANALYZE_STAGES = ['Анализ диалога']
-const procStage = ref(0)
+const reanalyzing = computed(() =>
+  tasks.hasActive('reanalyze', { id: route.params.id })
+)
+const retranscribing = computed(() =>
+  tasks.hasActive('retranscribe', { id: route.params.id })
+)
 
 async function load() {
   loading.value = true
@@ -72,47 +72,54 @@ async function remove() {
 
 async function reanalyze() {
   if (!confirm('Запустить анализ заново по текущему тексту?')) return
-  reanalyzing.value = true
-  procStage.value = 0
+  const tid = route.params.id
   error.value = ''
   try {
-    const { data } = await api.post(`/transcriptions/${route.params.id}/reanalyze`)
-    item.value = data
+    const data = await tasks.run(
+      {
+        kind: 'reanalyze',
+        meta: { id: tid },
+        label: `Анализ · ${item.value?.filename || tid}`,
+        hint: 'Выполняется повторный анализ диалога',
+      },
+      async () => {
+        const { data } = await api.post(`/transcriptions/${tid}/reanalyze`)
+        return data
+      }
+    )
+    // обновим только если пользователь всё ещё на этом анализе
+    if (route.params.id === tid) item.value = data
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Не удалось выполнить анализ'
-  } finally {
-    reanalyzing.value = false
+    // тост покажет ошибку, локально тоже отметим
+    if (route.params.id === tid) {
+      error.value = e.response?.data?.detail || 'Не удалось выполнить анализ'
+    }
   }
 }
 
-function openRetranscribeModal() {
-  retranscribeLang.value = item.value?.language === 'kk' ? 'kk' : 'ru'
-  showRetranscribeModal.value = true
-}
-
-function closeRetranscribeModal() {
-  if (retranscribing.value) return
-  showRetranscribeModal.value = false
-}
-
 async function retranscribe() {
-  retranscribing.value = true
-  showRetranscribeModal.value = false
-  procStage.value = 0
+  if (retranscribing.value) return
+  if (!confirm('Запустить повторную транскрипцию по сохранённому аудио?')) return
+  const tid = route.params.id
   error.value = ''
-  const t1 = setTimeout(() => { if (procStage.value === 0) procStage.value = 1 }, 1500)
-  const t2 = setTimeout(() => { if (procStage.value === 1) procStage.value = 2 }, 14000)
   try {
-    const form = new FormData()
-    form.append('language', retranscribeLang.value)
-    const { data } = await api.post(`/transcriptions/${route.params.id}/retranscribe`, form)
-    item.value = data
+    const data = await tasks.run(
+      {
+        kind: 'retranscribe',
+        meta: { id: tid },
+        label: `Транскрайб · ${item.value?.filename || tid}`,
+        hint: 'Скачиваем аудио, расшифровываем и анализируем',
+      },
+      async () => {
+        const { data } = await api.post(`/transcriptions/${tid}/retranscribe`)
+        return data
+      }
+    )
+    if (route.params.id === tid) item.value = data
   } catch (e) {
-    error.value = e.response?.data?.detail || 'Не удалось выполнить транскрипцию'
-  } finally {
-    clearTimeout(t1)
-    clearTimeout(t2)
-    retranscribing.value = false
+    if (route.params.id === tid) {
+      error.value = e.response?.data?.detail || 'Не удалось выполнить транскрипцию'
+    }
   }
 }
 
@@ -228,7 +235,7 @@ onMounted(load)
             class="ghost"
             :disabled="reanalyzing || retranscribing"
             title="Заново скачать аудио, расшифровать и проанализировать"
-            @click="openRetranscribeModal"
+            @click="retranscribe"
           >
             <span v-if="retranscribing" class="row" style="gap:8px;"><span class="spinner"></span> Транскрайб…</span>
             <span v-else>↻ Транскрайб</span>
@@ -501,51 +508,6 @@ onMounted(load)
       </div>
     </template>
 
-    <ProcessOverlay
-      :visible="retranscribing"
-      title="Повторная транскрипция"
-      :stages="RETRANSCRIBE_STAGES"
-      :active-index="procStage"
-    />
-    <ProcessOverlay
-      :visible="reanalyzing"
-      title="Повторный анализ"
-      :stages="REANALYZE_STAGES"
-      :active-index="0"
-    />
-
-    <div v-if="showRetranscribeModal" class="rt-overlay" @click.self="closeRetranscribeModal">
-      <div class="rt-modal card">
-        <div class="rt-head">
-          <h2 class="rt-title">Повторная транскрипция</h2>
-          <button class="ghost icon-btn" @click="closeRetranscribeModal" :disabled="retranscribing">✕</button>
-        </div>
-        <p class="rt-sub">Выберите язык аудио.</p>
-        <div class="lang-options" role="radiogroup" aria-label="Язык аудио">
-          <button
-            type="button"
-            class="lang-chip"
-            :class="{ active: retranscribeLang === 'ru' }"
-            :disabled="retranscribing"
-            @click="retranscribeLang = 'ru'"
-          >Русский</button>
-          <button
-            type="button"
-            class="lang-chip"
-            :class="{ active: retranscribeLang === 'kk' }"
-            :disabled="retranscribing"
-            @click="retranscribeLang = 'kk'"
-          >Қазақша</button>
-        </div>
-        <div class="rt-actions">
-          <button class="ghost" @click="closeRetranscribeModal" :disabled="retranscribing">Отмена</button>
-          <button class="primary" :disabled="retranscribing" @click="retranscribe">
-            <span v-if="retranscribing" class="row" style="gap:8px;"><span class="spinner"></span> Запуск…</span>
-            <span v-else>Запустить</span>
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -948,44 +910,4 @@ h2 {
   max-height: none;
 }
 
-.rt-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(16, 24, 40, 0.45);
-  backdrop-filter: blur(4px);
-  z-index: 200;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-}
-.rt-modal {
-  width: 100%;
-  max-width: 460px;
-  padding: 24px 26px;
-}
-.rt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.rt-title { font-size: 18px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
-.icon-btn { padding: 6px 12px; font-size: 14px; }
-.rt-sub { color: var(--text-dim); font-size: 13.5px; margin: 6px 0 16px; line-height: 1.5; }
-.rt-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
-
-.lang-options { display: flex; gap: 8px; flex-wrap: wrap; }
-.lang-chip {
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s, border-color .15s, color .15s;
-}
-.lang-chip:hover:not(:disabled) { border-color: var(--brand); }
-.lang-chip.active {
-  background: var(--brand-soft-2);
-  border-color: var(--brand);
-  color: var(--brand);
-}
-.lang-chip:disabled { opacity: .6; cursor: not-allowed; }
 </style>

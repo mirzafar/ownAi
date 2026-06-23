@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import AppHeader from './components/AppHeader.vue'
+import BackgroundTasks from './components/BackgroundTasks.vue'
 
 const route = useRoute()
 const showHeader = computed(() => !!route.meta?.auth)
@@ -17,6 +18,7 @@ const showHeader = computed(() => !!route.meta?.auth)
         </transition>
       </router-view>
     </main>
+    <BackgroundTasks />
   </div>
 </template>
 

@@ -138,6 +138,23 @@ class OperatorStat(BaseModel):
     last_call_at: Optional[datetime] = None
 
 
+class OperatorDailyStat(BaseModel):
+    date: str
+    calls: int
+    analyzed: int
+    avg_score: Optional[float] = None
+    total_duration: int = 0
+
+
+class OperatorDetail(BaseModel):
+    manager_id: str
+    manager: str
+    period_days: int = 5
+    stats: OperatorStat
+    daily: List[OperatorDailyStat] = []
+    analyses: List[TranscriptionOut] = []
+
+
 class CriterionAverage(BaseModel):
     criterion_id: str
     criterion_name: str

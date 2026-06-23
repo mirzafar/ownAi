@@ -9,10 +9,18 @@ const loading = ref(true)
 const error = ref('')
 const query = ref('')
 
+const sorted = computed(() =>
+  [...items.value].sort((a, b) => {
+    const av = new Date(a.created_at || 0).getTime()
+    const bv = new Date(b.created_at || 0).getTime()
+    return bv - av
+  })
+)
+
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
-  if (!q) return items.value
-  return items.value.filter(i =>
+  if (!q) return sorted.value
+  return sorted.value.filter(i =>
     (i.filename || '').toLowerCase().includes(q)
     || (i.analysis?.summary || '').toLowerCase().includes(q)
     || (i.sales_analysis?.meta?.system_verdict || '').toLowerCase().includes(q)

@@ -46,41 +46,29 @@ async def convert_mpeg_bytes_to_ogg(value: bytes) -> bytes:
     return stdout
 
 
-TRANSCRIPTION_INSTRUCTIONS = {
-    "kk": (
-        "Бұл аудио қазақ тілінде.\n\n"
-        "Міндетің:\n"
-        "- Аудионы нақты және толық транскрипциялау.\n"
-        "- Мәтінді тек қазақ тілінде жазу.\n"
-        "- Ешқандай аударма жасамау.\n"
-        "- Өз ойыңды қоспау.\n"
-        "- Қысқартпай, мағынасын өзгертпей жазу.\n"
-        "- Паразит сөздерді алып тастау (мысалы: \"ммм\", \"эээ\", \"яғни\" егер мағынаға әсер етпесе).\n"
-        "- Сөйлемдерді табиғи түрде бөлу.\n"
-        "- Қосымша түсіндірме жазба.\n\n"
-        "Тек таза транскрипцияны қайтар."
-    ),
-    "ru": (
-        "Аудио на русском языке.\n\n"
-        "Твоя задача:\n"
-        "- Сделать точную транскрипцию.\n"
-        "- Разделить спикеров как \"Спикер 1:\", \"Спикер 2:\".\n"
-        "- Не переводить текст.\n"
-        "- Не добавлять комментарии.\n"
-        "- Не делать анализ.\n"
-        "- Вернуть только транскрипцию.\n\n"
-        "Без пояснений."
-    ),
-}
+# Универсальный билингвальный prompt для Whisper.
+# Whisper использует prompt как контекст: язык/стиль/частые термины подсказывают, чего ждать.
+# Включаем фразы и лексику обоих языков, чтобы модель не «съезжала» в один из них и не переводила.
+TRANSCRIPTION_PROMPT = (
+    "Аудио на русском или казахском языке (возможно смешанное). "
+    "Аудио орыс немесе қазақ тілінде болуы мүмкін (аралас болуы мүмкін). "
+    "Сделай точную транскрипцию на языке оригинала: не переводи, не сокращай, "
+    "не добавляй пояснений, сохраняй имена и термины. "
+    "Бастапқы тілінде дәл транскрипция жаса: аударма жасама, қысқартпа, "
+    "түсініктеме қоспа, есімдер мен терминдерді сақта. "
+    "Возможные имена и термины: Swiss Collection, RAAF Group, ЖК, ипотека, "
+    "апартаменты, бронь, рассрочка, менеджер, клиент, договор, объект. "
+    "Ықтимал сөздер: пәтер, үй, баға, бронь, ипотека, келісім, менеджер, клиент."
+)
 
-SUPPORTED_TRANSCRIPTION_LANGUAGES = set(TRANSCRIPTION_INSTRUCTIONS.keys())
+
+# Оставлено для обратной совместимости: поле language ещё может прилетать из старых клиентов,
+# но больше не влияет на транскрипцию — Whisper определяет язык автоматически.
+SUPPORTED_TRANSCRIPTION_LANGUAGES = {"ru", "kk", "auto"}
 
 
 def normalize_language(value: Optional[str]) -> str:
-    code = (value or "").strip().lower()
-    if code in SUPPORTED_TRANSCRIPTION_LANGUAGES:
-        return code
-    return "ru"
+    return "auto"
 
 
 async def transcribe_audio(file_bytes: bytes, filename: str, language: Optional[str] = None) -> str:
@@ -88,13 +76,11 @@ async def transcribe_audio(file_bytes: bytes, filename: str, language: Optional[
     ogg_bytes = await convert_mpeg_bytes_to_ogg(file_bytes)
     buf = BytesIO(ogg_bytes)
     buf.name = "audio.ogg"
-    lang = normalize_language(language)
     result = await client.audio.transcriptions.create(
         model=settings.openai_transcribe_model,
         file=buf,
         response_format="text",
-        language=lang,
-        prompt=TRANSCRIPTION_INSTRUCTIONS[lang],
+        prompt=TRANSCRIPTION_PROMPT,
     )
     if isinstance(result, str):
         return result

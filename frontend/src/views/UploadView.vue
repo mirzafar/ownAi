@@ -11,7 +11,6 @@ const loading = ref(false)
 const progress = ref(0)
 const error = ref('')
 const inputRef = ref(null)
-const language = ref('ru')
 
 const STAGES = ['Загрузка файла', 'Расшифровка аудио', 'Анализ диалога']
 const stageIndex = ref(0)
@@ -53,7 +52,6 @@ async function upload() {
   stageIndex.value = 0
   const form = new FormData()
   form.append('file', file.value)
-  form.append('language', language.value)
   try {
     const { data } = await api.post('/transcriptions', form, {
       onUploadProgress: (e) => {
@@ -116,26 +114,6 @@ function reset() {
           <div class="file-meta">{{ fileSize }} · {{ file.type || 'audio' }}</div>
         </div>
         <button class="ghost" @click.stop="reset" :disabled="loading">Убрать</button>
-      </div>
-    </div>
-
-    <div class="lang-row">
-      <label class="lang-label">Язык аудио</label>
-      <div class="lang-options" role="radiogroup" aria-label="Язык аудио">
-        <button
-          type="button"
-          class="lang-chip"
-          :class="{ active: language === 'ru' }"
-          :disabled="loading"
-          @click="language = 'ru'"
-        >Русский</button>
-        <button
-          type="button"
-          class="lang-chip"
-          :class="{ active: language === 'kk' }"
-          :disabled="loading"
-          @click="language = 'kk'"
-        >Қазақша</button>
       </div>
     </div>
 
@@ -227,35 +205,4 @@ function reset() {
   margin-top: 22px;
 }
 
-.lang-row {
-  margin-top: 18px;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-.lang-label {
-  font-size: 13px;
-  color: var(--text-dim);
-  font-weight: 600;
-}
-.lang-options { display: flex; gap: 8px; }
-.lang-chip {
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s, border-color .15s, color .15s;
-}
-.lang-chip:hover:not(:disabled) { border-color: var(--brand); }
-.lang-chip.active {
-  background: var(--brand-soft-2);
-  border-color: var(--brand);
-  color: var(--brand);
-}
-.lang-chip:disabled { opacity: .6; cursor: not-allowed; }
 </style>

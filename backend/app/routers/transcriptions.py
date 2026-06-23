@@ -3,17 +3,15 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from ..auth import get_current_user
 from ..database import audio_bucket, transcriptions
 from ..models import AnalysisResult, SalesAnalysis, TranscriptionOut
 from ..openai_service import (
-    SUPPORTED_TRANSCRIPTION_LANGUAGES,
     analyze_sales_call,
     analyze_transcript,
-    normalize_language,
     transcribe_audio,
 )
 
@@ -66,7 +64,6 @@ def _doc_to_out(doc: dict) -> TranscriptionOut:
 @router.post("", response_model=TranscriptionOut, status_code=status.HTTP_201_CREATED)
 async def create_transcription(
     file: UploadFile = File(...),
-    language: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ) -> TranscriptionOut:
     ext = os.path.splitext(file.filename or "")[1].lower()
@@ -81,13 +78,6 @@ async def create_transcription(
             detail=f"Unsupported file type: {file.content_type or ext or 'unknown'}",
         )
 
-    if language and language.strip().lower() not in SUPPORTED_TRANSCRIPTION_LANGUAGES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported language: {language}",
-        )
-    lang = normalize_language(language)
-
     contents = await file.read()
     if not contents:
         raise HTTPException(status_code=400, detail="Empty file")
@@ -99,14 +89,13 @@ async def create_transcription(
         "filename": file.filename or "audio",
         "size": len(contents),
         "status": "processing",
-        "language": lang,
         "created_at": datetime.now(timezone.utc),
     }
     result = await transcriptions.insert_one(doc)
     tid = result.inserted_id
 
     try:
-        text = await transcribe_audio(contents, file.filename or "audio.mp3", language=lang)
+        text = await transcribe_audio(contents, file.filename or "audio.mp3")
         analysis = await analyze_transcript(text)
         update = {
             "text": text,
@@ -225,7 +214,6 @@ async def reanalyze(tid: str, user=Depends(get_current_user)) -> TranscriptionOu
 @router.post("/{tid}/retranscribe", response_model=TranscriptionOut)
 async def retranscribe(
     tid: str,
-    language: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ) -> TranscriptionOut:
     try:
@@ -238,20 +226,15 @@ async def retranscribe(
     if not doc.get("audio_file_id"):
         raise HTTPException(status_code=400, detail="Аудио не сохранено — повторная транскрипция невозможна")
 
-    if language and language.strip().lower() not in SUPPORTED_TRANSCRIPTION_LANGUAGES:
-        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
-    chosen_lang = normalize_language(language or doc.get("language"))
-
     await transcriptions.update_one(
         {"_id": oid},
-        {"$set": {"status": "processing", "error": None, "language": chosen_lang}},
+        {"$set": {"status": "processing", "error": None}},
     )
     try:
         audio_bytes = await _load_audio_bytes(doc["audio_file_id"])
         text = await transcribe_audio(
             audio_bytes,
             doc.get("filename") or "audio.mp3",
-            language=chosen_lang,
         )
         update = await _run_analysis(text, doc.get("source"))
         update["text"] = text

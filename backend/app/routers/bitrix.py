@@ -3,7 +3,7 @@ from typing import Any, Optional
 
 import httpx
 from bson import ObjectId
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import get_current_user
 from ..config import settings
@@ -16,9 +16,7 @@ from ..models import (
     TranscriptionOut,
 )
 from ..openai_service import (
-    SUPPORTED_TRANSCRIPTION_LANGUAGES,
     analyze_sales_call,
-    normalize_language,
     transcribe_audio,
 )
 from .transcriptions import _doc_to_out
@@ -156,13 +154,8 @@ async def list_calls(
 @router.post("/calls/{call_id}/analyze", response_model=TranscriptionOut)
 async def analyze_call(
     call_id: str,
-    language: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ) -> TranscriptionOut:
-    if language and language.strip().lower() not in SUPPORTED_TRANSCRIPTION_LANGUAGES:
-        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
-    lang = normalize_language(language)
-
     existing = await transcriptions.find_one({"user_id": user["_id"], "bitrix_call_id": call_id})
     if existing and existing.get("status") == "done":
         return _doc_to_out(existing)
@@ -207,7 +200,6 @@ async def analyze_call(
         "duration": call.duration,
         "size": len(audio_bytes),
         "status": "processing",
-        "language": lang,
         "created_at": now,
     }
     if existing:
@@ -239,7 +231,7 @@ async def analyze_call(
     )
 
     try:
-        text = await transcribe_audio(audio_bytes, filename, language=lang)
+        text = await transcribe_audio(audio_bytes, filename)
         sales = await analyze_sales_call(text, source="call")
         update = {
             "text": text,

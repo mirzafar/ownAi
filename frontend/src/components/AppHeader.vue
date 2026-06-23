@@ -52,6 +52,9 @@ function isActive(prefix) {
       <router-link to="/analyses" class="nav-link" :class="{ active: isActive('/analyses') || isActive('/t') }">
         <span class="ico">✦</span><span>Анализы</span>
       </router-link>
+      <router-link to="/operators" class="nav-link" :class="{ active: isActive('/operators') }">
+        <span class="ico">🎧</span><span>Операторы</span>
+      </router-link>
       <router-link
         v-if="auth.user?.is_admin"
         to="/users"

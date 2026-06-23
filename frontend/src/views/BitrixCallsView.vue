@@ -2,9 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
-import ProcessOverlay from '../components/ProcessOverlay.vue'
+import { useTasksStore } from '../stores/tasks'
 
 const router = useRouter()
+const tasks = useTasksStore()
 
 function todayISO() {
   const d = new Date()
@@ -22,13 +23,11 @@ const loading = ref(true)
 const error = ref('')
 const dateFrom = ref(todayISO())
 const dateTo = ref(todayISO())
-const analyzingId = ref(null)
 const playingId = ref(null)
-const analyzeTarget = ref(null)
-const analyzeLang = ref('ru')
 
-const ANALYZE_STAGES = ['Скачивание записи', 'Расшифровка', 'Анализ диалога']
-const procStage = ref(0)
+function isAnalyzing(callId) {
+  return tasks.hasActive('analyze_call', { id: callId })
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
@@ -56,36 +55,26 @@ async function load() {
   }
 }
 
-function openAnalyzeModal(item) {
-  analyzeTarget.value = item
-  analyzeLang.value = 'ru'
-}
+function startAnalyze(item) {
+  if (!item || !item.record_url) return
+  if (isAnalyzing(item.id)) return
+  const callId = item.id
+  const label = `Анализ звонка · ${item.manager || item.phone || callId}`
 
-function closeAnalyzeModal() {
-  if (analyzingId.value) return
-  analyzeTarget.value = null
-}
-
-async function analyze() {
-  const item = analyzeTarget.value
-  if (!item) return
-  analyzingId.value = item.id
-  procStage.value = 0
-  analyzeTarget.value = null
-  const t1 = setTimeout(() => { if (procStage.value === 0) procStage.value = 1 }, 2500)
-  const t2 = setTimeout(() => { if (procStage.value === 1) procStage.value = 2 }, 14000)
-  try {
-    const form = new FormData()
-    form.append('language', analyzeLang.value)
-    const { data } = await api.post(`/bitrix/calls/${item.id}/analyze`, form)
-    router.push(`/t/${data.id}`)
-  } catch (e) {
-    error.value = e.response?.data?.detail || 'Анализ не выполнен'
-  } finally {
-    clearTimeout(t1)
-    clearTimeout(t2)
-    analyzingId.value = null
-  }
+  tasks.run(
+    {
+      kind: 'analyze_call',
+      meta: { id: callId },
+      label,
+      hint: 'Скачиваем запись, расшифровываем и анализируем',
+    },
+    async () => {
+      const { data } = await api.post(`/bitrix/calls/${callId}/analyze`)
+      return data
+    }
+  ).then(() => {
+    if (router.currentRoute.value.path.startsWith('/calls')) load()
+  }).catch(() => {})
 }
 
 function openExisting(item) {
@@ -322,11 +311,11 @@ onMounted(load)
           <button
             v-else
             class="action-icon analyze"
-            :disabled="!item.record_url || analyzingId === item.id"
-            :title="item.record_url ? 'Анализировать' : 'Нет записи'"
-            @click="openAnalyzeModal(item)"
+            :disabled="!item.record_url || isAnalyzing(item.id)"
+            :title="item.record_url ? (isAnalyzing(item.id) ? 'Анализ выполняется в фоне' : 'Анализировать') : 'Нет записи'"
+            @click="startAnalyze(item)"
           >
-            <span v-if="analyzingId === item.id" class="spinner"></span>
+            <span v-if="isAnalyzing(item.id)" class="spinner"></span>
             <svg v-else viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M10 3v3M10 14v3M3 10h3M14 10h3M5.5 5.5l2 2M12.5 12.5l2 2M5.5 14.5l2-2M12.5 7.5l2-2" />
             </svg>
@@ -345,45 +334,6 @@ onMounted(load)
       <button class="ghost" @click="changePage(1)" :disabled="page >= totalPages || loading">Вперёд →</button>
     </div>
 
-    <ProcessOverlay
-      :visible="!!analyzingId"
-      title="Анализ звонка"
-      :stages="ANALYZE_STAGES"
-      :active-index="procStage"
-    />
-
-    <div v-if="analyzeTarget" class="rt-overlay" @click.self="closeAnalyzeModal">
-      <div class="rt-modal card">
-        <div class="rt-head">
-          <h2 class="rt-title">Анализ звонка</h2>
-          <button class="ghost icon-btn" @click="closeAnalyzeModal" :disabled="!!analyzingId">✕</button>
-        </div>
-        <p class="rt-sub">Выберите язык аудио.</p>
-        <div class="lang-options" role="radiogroup" aria-label="Язык аудио">
-          <button
-            type="button"
-            class="lang-chip"
-            :class="{ active: analyzeLang === 'ru' }"
-            :disabled="!!analyzingId"
-            @click="analyzeLang = 'ru'"
-          >Русский</button>
-          <button
-            type="button"
-            class="lang-chip"
-            :class="{ active: analyzeLang === 'kk' }"
-            :disabled="!!analyzingId"
-            @click="analyzeLang = 'kk'"
-          >Қазақша</button>
-        </div>
-        <div class="rt-actions">
-          <button class="ghost" @click="closeAnalyzeModal" :disabled="!!analyzingId">Отмена</button>
-          <button class="primary" :disabled="!!analyzingId" @click="analyze">
-            <span v-if="analyzingId" class="row" style="gap:8px;"><span class="spinner"></span> Запуск…</span>
-            <span v-else>Запустить</span>
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -654,40 +604,4 @@ onMounted(load)
   .col-actions { grid-column: 1 / -1; align-items: flex-start; justify-content: flex-start; }
 }
 
-.rt-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(16, 24, 40, 0.45);
-  backdrop-filter: blur(4px);
-  z-index: 200;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-}
-.rt-modal { width: 100%; max-width: 460px; padding: 24px 26px; }
-.rt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.rt-title { font-size: 18px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
-.icon-btn { padding: 6px 12px; font-size: 14px; }
-.rt-sub { color: var(--text-dim); font-size: 13.5px; margin: 6px 0 16px; line-height: 1.5; }
-.rt-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
-
-.lang-options { display: flex; gap: 8px; flex-wrap: wrap; }
-.lang-chip {
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  padding: 8px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s, border-color .15s, color .15s;
-}
-.lang-chip:hover:not(:disabled) { border-color: var(--brand); }
-.lang-chip.active {
-  background: var(--brand-soft-2);
-  border-color: var(--brand);
-  color: var(--brand);
-}
-.lang-chip:disabled { opacity: .6; cursor: not-allowed; }
 </style>
