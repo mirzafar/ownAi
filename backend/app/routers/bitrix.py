@@ -13,6 +13,13 @@ from ..models import (
     BitrixCallsPage,
     BitrixChat,
     BitrixChatsPage,
+    BitrixContactValue,
+    BitrixLead,
+    BitrixLeadActivity,
+    BitrixLeadDetail,
+    BitrixLeadStatus,
+    BitrixLeadTimelineEntry,
+    BitrixLeadsPage,
     TranscriptionOut,
 )
 from ..openai_service import (
@@ -36,6 +43,24 @@ def _webhook_base() -> str:
     if not base.endswith("/"):
         base += "/"
     return base
+
+
+def _portal_base() -> str:
+    """Корневой URL портала Bitrix24, выведенный из webhook (без /rest/.../...)."""
+    base = (settings.bitrix_webhook_url or "").strip()
+    if not base:
+        return ""
+    idx = base.find("/rest/")
+    if idx == -1:
+        return base.rstrip("/") + "/"
+    return base[: idx + 1]
+
+
+def _lead_portal_url(lead_id: str) -> str:
+    portal = _portal_base()
+    if not portal or not lead_id:
+        return ""
+    return f"{portal}crm/lead/details/{lead_id}/"
 
 
 async def _b24(method: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -486,3 +511,428 @@ async def analyze_chat(session_id: str, user=Depends(get_current_user)) -> Trans
     await transcriptions.update_one({"_id": tid}, {"$set": update})
     fresh = await transcriptions.find_one({"_id": tid})
     return _doc_to_out(fresh)
+
+
+# ============================================================================
+# Leads (CRM)
+# ============================================================================
+
+LEAD_PAGE_SIZE_MAX = 20
+
+
+async def _fetch_status_list(entity_id: str) -> list[BitrixLeadStatus]:
+    data = await _b24("crm.status.list", {"filter": {"ENTITY_ID": entity_id}})
+    rows = data.get("result") or []
+    items: list[BitrixLeadStatus] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        items.append(
+            BitrixLeadStatus(
+                status_id=str(r.get("STATUS_ID") or r.get("ID") or ""),
+                name=str(r.get("NAME") or "").strip() or str(r.get("STATUS_ID") or ""),
+                sort=int(r.get("SORT") or 0),
+                color=str(r.get("COLOR") or ""),
+            )
+        )
+    items.sort(key=lambda s: (s.sort, s.name))
+    return items
+
+
+async def _fetch_lead_statuses() -> list[BitrixLeadStatus]:
+    return await _fetch_status_list("STATUS")
+
+
+async def _fetch_lead_sources() -> list[BitrixLeadStatus]:
+    return await _fetch_status_list("SOURCE")
+
+
+@router.get("/leads/statuses", response_model=list[BitrixLeadStatus])
+async def list_lead_statuses(user=Depends(get_current_user)) -> list[BitrixLeadStatus]:
+    return await _fetch_lead_statuses()
+
+
+@router.get("/leads/sources", response_model=list[BitrixLeadStatus])
+async def list_lead_sources(user=Depends(get_current_user)) -> list[BitrixLeadStatus]:
+    return await _fetch_lead_sources()
+
+
+def _to_b24_iso(value: Optional[str], end_of_day: bool = False) -> Optional[str]:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    # Принимаем как полную ISO-дату, так и YYYY-MM-DD
+    if "T" in raw:
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
+        except ValueError:
+            return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return dt.isoformat()
+
+
+@router.get("/leads", response_model=BitrixLeadsPage)
+async def list_leads(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(LEAD_PAGE_SIZE_MAX, ge=1, le=LEAD_PAGE_SIZE_MAX),
+    status_id: Optional[str] = Query(None),
+    source_id: Optional[str] = Query(None),
+    assigned_by_id: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, max_length=120),
+    user=Depends(get_current_user),
+) -> BitrixLeadsPage:
+    filt: dict[str, Any] = {}
+    if status_id:
+        filt["STATUS_ID"] = status_id
+    if source_id:
+        filt["SOURCE_ID"] = source_id
+    if assigned_by_id:
+        filt["ASSIGNED_BY_ID"] = assigned_by_id
+
+    df = _to_b24_iso(date_from)
+    dt = _to_b24_iso(date_to, end_of_day=True)
+    if df:
+        filt[">=DATE_CREATE"] = df
+    if dt:
+        filt["<=DATE_CREATE"] = dt
+
+    if search:
+        # Битрикс позволяет подстрочный поиск по полю через префикс `%`
+        filt["%TITLE"] = search.strip()
+
+    start = (page - 1) * page_size
+    data = await _b24(
+        "crm.lead.list",
+        {
+            "filter": filt,
+            "order": {"DATE_CREATE": "DESC"},
+            "select": [
+                "ID",
+                "TITLE",
+                "NAME",
+                "LAST_NAME",
+                "SECOND_NAME",
+                "STATUS_ID",
+                "SOURCE_ID",
+                "OPPORTUNITY",
+                "CURRENCY_ID",
+                "PHONE",
+                "EMAIL",
+                "ASSIGNED_BY_ID",
+                "DATE_CREATE",
+                "DATE_MODIFY",
+            ],
+            "start": start,
+        },
+    )
+    raw_items = (data.get("result") or [])[:page_size]
+    total = int(data.get("total", len(raw_items)))
+
+    statuses = {s.status_id: s.name for s in await _fetch_lead_statuses()}
+    sources = {s.status_id: s.name for s in await _fetch_lead_sources()}
+
+    user_ids = [str(r.get("ASSIGNED_BY_ID") or "") for r in raw_items]
+    users_map = await _fetch_users(user_ids)
+
+    def _first_value(value: Any) -> str:
+        if isinstance(value, list) and value:
+            head = value[0]
+            if isinstance(head, dict):
+                return str(head.get("VALUE") or "").strip()
+            return str(head).strip()
+        if isinstance(value, str):
+            return value.strip()
+        return ""
+
+    items: list[BitrixLead] = []
+    for r in raw_items:
+        created: Optional[datetime] = None
+        raw_date = r.get("DATE_CREATE")
+        if raw_date:
+            try:
+                created = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            except ValueError:
+                created = None
+        modified: Optional[datetime] = None
+        raw_mod = r.get("DATE_MODIFY")
+        if raw_mod:
+            try:
+                modified = datetime.fromisoformat(str(raw_mod).replace("Z", "+00:00"))
+            except ValueError:
+                modified = None
+        sid = str(r.get("STATUS_ID") or "")
+        src_id = str(r.get("SOURCE_ID") or "")
+        uid = str(r.get("ASSIGNED_BY_ID") or "")
+        items.append(
+            BitrixLead(
+                id=str(r.get("ID") or ""),
+                title=str(r.get("TITLE") or "").strip(),
+                name=str(r.get("NAME") or "").strip(),
+                last_name=str(r.get("LAST_NAME") or "").strip(),
+                second_name=str(r.get("SECOND_NAME") or "").strip(),
+                status_id=sid,
+                status_name=statuses.get(sid, sid),
+                source_id=src_id,
+                source_name=sources.get(src_id, src_id),
+                opportunity=float(r.get("OPPORTUNITY") or 0) if r.get("OPPORTUNITY") not in (None, "") else 0.0,
+                currency_id=str(r.get("CURRENCY_ID") or "").strip(),
+                phone=_first_value(r.get("PHONE")),
+                email=_first_value(r.get("EMAIL")),
+                assigned_by_id=uid,
+                assigned_by=users_map.get(uid, ""),
+                created_at=created,
+                modified_at=modified,
+            )
+        )
+
+    return BitrixLeadsPage(items=items, total=total, page=page, page_size=page_size)
+
+
+def _parse_b24_dt(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _multi_field(value: Any) -> list[BitrixContactValue]:
+    if not isinstance(value, list):
+        return []
+    out: list[BitrixContactValue] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            v = str(entry.get("VALUE") or "").strip()
+            if not v:
+                continue
+            out.append(BitrixContactValue(value=v, kind=str(entry.get("VALUE_TYPE") or "")))
+        elif isinstance(entry, str) and entry.strip():
+            out.append(BitrixContactValue(value=entry.strip(), kind=""))
+    return out
+
+
+@router.get("/leads/{lead_id}", response_model=BitrixLeadDetail)
+async def get_lead(lead_id: str, user=Depends(get_current_user)) -> BitrixLeadDetail:
+    if not lead_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Некорректный ID лида")
+
+    data = await _b24("crm.lead.get", {"id": lead_id})
+    raw = data.get("result")
+    if not raw:
+        raise HTTPException(status_code=404, detail="Лид не найден")
+
+    statuses = {s.status_id: s.name for s in await _fetch_lead_statuses()}
+
+    assigned_id = str(raw.get("ASSIGNED_BY_ID") or "")
+    created_by_id = str(raw.get("CREATED_BY_ID") or "")
+    users_map = await _fetch_users([assigned_id, created_by_id])
+
+    sid = str(raw.get("STATUS_ID") or "")
+
+    return BitrixLeadDetail(
+        id=str(raw.get("ID") or lead_id),
+        bitrix_url=_lead_portal_url(str(raw.get("ID") or lead_id)),
+        title=str(raw.get("TITLE") or "").strip(),
+        name=str(raw.get("NAME") or "").strip(),
+        last_name=str(raw.get("LAST_NAME") or "").strip(),
+        second_name=str(raw.get("SECOND_NAME") or "").strip(),
+        honorific=str(raw.get("HONORIFIC") or "").strip(),
+        status_id=sid,
+        status_name=statuses.get(sid, sid),
+        source_id=str(raw.get("SOURCE_ID") or "").strip(),
+        source_description=str(raw.get("SOURCE_DESCRIPTION") or "").strip(),
+        opportunity=float(raw.get("OPPORTUNITY") or 0) if raw.get("OPPORTUNITY") not in (None, "") else 0.0,
+        currency_id=str(raw.get("CURRENCY_ID") or "").strip(),
+        assigned_by_id=assigned_id,
+        assigned_by=users_map.get(assigned_id, ""),
+        created_by_id=created_by_id,
+        created_by=users_map.get(created_by_id, ""),
+        company_title=str(raw.get("COMPANY_TITLE") or "").strip(),
+        post=str(raw.get("POST") or "").strip(),
+        address=str(raw.get("ADDRESS") or "").strip(),
+        comments=str(raw.get("COMMENTS") or "").strip(),
+        phones=_multi_field(raw.get("PHONE")),
+        emails=_multi_field(raw.get("EMAIL")),
+        webs=_multi_field(raw.get("WEB")),
+        ims=_multi_field(raw.get("IM")),
+        utm_source=str(raw.get("UTM_SOURCE") or "").strip(),
+        utm_medium=str(raw.get("UTM_MEDIUM") or "").strip(),
+        utm_campaign=str(raw.get("UTM_CAMPAIGN") or "").strip(),
+        created_at=_parse_b24_dt(raw.get("DATE_CREATE")),
+        modified_at=_parse_b24_dt(raw.get("DATE_MODIFY")),
+    )
+
+
+_ACTIVITY_TYPE_MAP = {
+    1: "meeting",
+    2: "call",
+    3: "task",
+    4: "email",
+    6: "activity",
+}
+
+
+@router.get("/leads/{lead_id}/activity", response_model=BitrixLeadActivity)
+async def get_lead_activity(
+    lead_id: str,
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    user=Depends(get_current_user),
+) -> BitrixLeadActivity:
+    if not lead_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Некорректный ID лида")
+
+    df = _to_b24_iso(date_from)
+    dt = _to_b24_iso(date_to, end_of_day=True)
+
+    activity_filter: dict[str, Any] = {"OWNER_TYPE_ID": 1, "OWNER_ID": int(lead_id)}
+    if df:
+        activity_filter[">=CREATED"] = df
+    if dt:
+        activity_filter["<=CREATED"] = dt
+
+    comment_filter: dict[str, Any] = {"ENTITY_ID": int(lead_id), "ENTITY_TYPE": "lead"}
+    if df:
+        comment_filter[">=CREATED"] = df
+    if dt:
+        comment_filter["<=CREATED"] = dt
+
+    call_filter: dict[str, Any] = {"CRM_ENTITY_TYPE": "LEAD", "CRM_ENTITY_ID": lead_id}
+    if df:
+        call_filter[">=CALL_START_DATE"] = df
+    if dt:
+        call_filter["<=CALL_START_DATE"] = dt
+
+    # Активности (звонки, письма, встречи, задачи)
+    try:
+        act_data = await _b24(
+            "crm.activity.list",
+            {
+                "filter": activity_filter,
+                "order": {"CREATED": "DESC"},
+                "select": [
+                    "ID", "TYPE_ID", "SUBJECT", "DESCRIPTION",
+                    "COMPLETED", "RESPONSIBLE_ID", "CREATED",
+                    "START_TIME", "END_TIME", "DIRECTION",
+                ],
+            },
+        )
+        activities = act_data.get("result") or []
+    except HTTPException:
+        activities = []
+
+    # Комментарии таймлайна
+    try:
+        com_data = await _b24(
+            "crm.timeline.comment.list",
+            {
+                "filter": comment_filter,
+                "order": {"CREATED": "DESC"},
+            },
+        )
+        comments = com_data.get("result") or []
+    except HTTPException:
+        comments = []
+
+    # Звонки через voximplant (если интеграция включена)
+    try:
+        call_data = await _b24(
+            "voximplant.statistic.get",
+            {
+                "FILTER": call_filter,
+                "SORT": "CALL_START_DATE",
+                "ORDER": "DESC",
+            },
+        )
+        call_rows = call_data.get("result") or []
+    except HTTPException:
+        call_rows = []
+
+    # Собираем уникальные id ответственных/авторов
+    user_ids: list[str] = []
+    for a in activities:
+        if isinstance(a, dict):
+            user_ids.append(str(a.get("RESPONSIBLE_ID") or ""))
+    for c in comments:
+        if isinstance(c, dict):
+            user_ids.append(str(c.get("AUTHOR_ID") or ""))
+    for r in call_rows:
+        if isinstance(r, dict):
+            user_ids.append(str(r.get("PORTAL_USER_ID") or ""))
+    users_map = await _fetch_users(user_ids)
+
+    timeline: list[BitrixLeadTimelineEntry] = []
+
+    for a in activities:
+        if not isinstance(a, dict):
+            continue
+        # Звонки показываем в отдельной секции, в таймлайне их не дублируем.
+        try:
+            type_id = int(a.get("TYPE_ID") or 0)
+        except (TypeError, ValueError):
+            type_id = 0
+        if type_id == 2:
+            continue
+        activity_type = _ACTIVITY_TYPE_MAP.get(type_id, "activity")
+        responsible = str(a.get("RESPONSIBLE_ID") or "")
+        timeline.append(
+            BitrixLeadTimelineEntry(
+                id=str(a.get("ID") or ""),
+                kind="activity",
+                activity_type=activity_type,
+                subject=str(a.get("SUBJECT") or "").strip(),
+                text=str(a.get("DESCRIPTION") or "").strip(),
+                author_id=responsible,
+                author=users_map.get(responsible, ""),
+                completed=str(a.get("COMPLETED") or "N").upper() == "Y",
+                direction=str(a.get("DIRECTION") or ""),
+                date=_parse_b24_dt(a.get("CREATED") or a.get("START_TIME")),
+            )
+        )
+
+    for c in comments:
+        if not isinstance(c, dict):
+            continue
+        author_id = str(c.get("AUTHOR_ID") or "")
+        timeline.append(
+            BitrixLeadTimelineEntry(
+                id=str(c.get("ID") or ""),
+                kind="comment",
+                activity_type="",
+                subject="",
+                text=str(c.get("COMMENT") or "").strip(),
+                author_id=author_id,
+                author=users_map.get(author_id, ""),
+                completed=True,
+                direction="",
+                date=_parse_b24_dt(c.get("CREATED")),
+            )
+        )
+
+    timeline.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    calls = [_normalize_call(r, users_map) for r in call_rows if isinstance(r, dict)]
+
+    if calls:
+        cursor = transcriptions.find(
+            {"user_id": user["_id"], "bitrix_call_id": {"$in": [c.id for c in calls]}},
+            {"_id": 1, "bitrix_call_id": 1, "status": 1},
+        )
+        analyzed = {doc["bitrix_call_id"]: doc async for doc in cursor}
+        for c in calls:
+            doc = analyzed.get(c.id)
+            if doc:
+                c.transcription_id = str(doc["_id"])
+                c.analyzed = doc.get("status") == "done"
+
+    return BitrixLeadActivity(timeline=timeline, calls=calls)

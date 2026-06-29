@@ -9,6 +9,8 @@ import TranscriptionView from './views/TranscriptionView.vue'
 import BitrixCallsView from './views/BitrixCallsView.vue'
 import BitrixChatsView from './views/BitrixChatsView.vue'
 import AnalysesView from './views/AnalysesView.vue'
+import LeadsView from './views/LeadsView.vue'
+import LeadDetailView from './views/LeadDetailView.vue'
 import OperatorsView from './views/OperatorsView.vue'
 import OperatorDetailView from './views/OperatorDetailView.vue'
 import ProfileView from './views/ProfileView.vue'
@@ -25,6 +27,8 @@ const routes = [
   { path: '/analyses', component: AnalysesView, meta: { auth: true } },
   { path: '/operators', component: OperatorsView, meta: { auth: true } },
   { path: '/operators/:id', component: OperatorDetailView, meta: { auth: true } },
+  { path: '/leads', component: LeadsView, meta: { auth: true } },
+  { path: '/leads/:id', component: LeadDetailView, meta: { auth: true } },
   { path: '/upload', component: UploadView, meta: { auth: true } },
   { path: '/profile', component: ProfileView, meta: { auth: true } },
   { path: '/users', component: UsersView, meta: { auth: true, admin: true } },

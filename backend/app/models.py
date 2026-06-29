@@ -211,3 +211,93 @@ class BitrixChatsPage(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class BitrixLeadStatus(BaseModel):
+    status_id: str
+    name: str
+    sort: int = 0
+    color: str = ""
+
+
+class BitrixLead(BaseModel):
+    id: str
+    title: str = ""
+    name: str = ""
+    last_name: str = ""
+    second_name: str = ""
+    status_id: str = ""
+    status_name: str = ""
+    source_id: str = ""
+    source_name: str = ""
+    opportunity: float = 0.0
+    currency_id: str = ""
+    phone: str = ""
+    email: str = ""
+    assigned_by_id: str = ""
+    assigned_by: str = ""
+    created_at: Optional[datetime] = None
+    modified_at: Optional[datetime] = None
+
+
+class BitrixLeadsPage(BaseModel):
+    items: List[BitrixLead]
+    total: int
+    page: int
+    page_size: int
+
+
+class BitrixContactValue(BaseModel):
+    value: str
+    kind: str = ""  # WORK / MOBILE / HOME / etc.
+
+
+class BitrixLeadDetail(BaseModel):
+    id: str
+    bitrix_url: str = ""
+    title: str = ""
+    name: str = ""
+    last_name: str = ""
+    second_name: str = ""
+    honorific: str = ""
+    status_id: str = ""
+    status_name: str = ""
+    source_id: str = ""
+    source_description: str = ""
+    opportunity: float = 0.0
+    currency_id: str = ""
+    assigned_by_id: str = ""
+    assigned_by: str = ""
+    created_by_id: str = ""
+    created_by: str = ""
+    company_title: str = ""
+    post: str = ""
+    address: str = ""
+    comments: str = ""
+    phones: List[BitrixContactValue] = []
+    emails: List[BitrixContactValue] = []
+    webs: List[BitrixContactValue] = []
+    ims: List[BitrixContactValue] = []
+    utm_source: str = ""
+    utm_medium: str = ""
+    utm_campaign: str = ""
+    created_at: Optional[datetime] = None
+    modified_at: Optional[datetime] = None
+
+
+class BitrixLeadTimelineEntry(BaseModel):
+    id: str
+    kind: str  # 'comment' | 'activity'
+    activity_type: str = ""  # call, email, meeting, task, other
+    subject: str = ""
+    text: str = ""
+    author_id: str = ""
+    author: str = ""
+    completed: bool = False
+    direction: str = ""  # in / out (для звонков-активностей)
+    date: Optional[datetime] = None
+
+
+class BitrixLeadActivity(BaseModel):
+    timeline: List[BitrixLeadTimelineEntry] = []
+    calls: List[BitrixCall] = []
