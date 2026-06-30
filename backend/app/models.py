@@ -1,8 +1,17 @@
+"""Модели данных. После рефакторинга на единую коллекцию `analyses` —
+звонки, лиды и чаты представлены одной структурой `AnalysisDoc`, отличаясь
+только полем `kind` и блоком `call`/`lead`/`chat` со специфичными данными.
+"""
+
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Auth
+# ═══════════════════════════════════════════════════════════════════════════
 
 class UserRegister(BaseModel):
     login: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
@@ -52,28 +61,24 @@ class TokenResponse(BaseModel):
     user: UserOut
 
 
-class AnalysisResult(BaseModel):
-    summary: str
-    topics: List[str] = []
-    sentiment: str = ""
-    action_items: List[str] = []
-    language: str = ""
-
+# ═══════════════════════════════════════════════════════════════════════════
+# Scoring (общая структура оценки для звонка, чата, лида)
+# ═══════════════════════════════════════════════════════════════════════════
 
 class CriterionScore(BaseModel):
-    criterion_id: str
-    criterion_name: str
-    category_id: str = ""
-    category_name: str = ""
-    score: int
-    max_score: int = 100
+    id: str                  # machine id из scoring_card
+    name: str                # человекочитаемое имя
+    category_id: str
+    category_name: str
+    score: int               # 0..max
+    max_score: int
     comment: str = ""
 
 
 class StopFactor(BaseModel):
-    factor_id: str
+    id: str
     name: str
-    penalty: int
+    penalty: int             # положительное число — на сколько вычесть
     triggered: bool = False
     comment: str = ""
 
@@ -84,64 +89,136 @@ class CoachingTask(BaseModel):
     action_item: str
 
 
-class SalesAnalysisMeta(BaseModel):
-    system_verdict: str
-    total_score: int
-    grade: str = ""
+class ScoringMeta(BaseModel):
+    verdict: str = ""
+    raw_score: int = 0           # -max_penalty..max_raw_score (исходя из карты)
+    max_raw_score: int = 0       # snapshot карты на момент анализа
+    normalized_score: int = 0    # 0..100
+    grade: str = ""              # Эталон / Хороший / Удовлетворительно / Неудовлетворительно
 
 
-class SalesAnalysisBlock(BaseModel):
+class Scoring(BaseModel):
+    """Унифицированная оценка по карте Swiss Collection."""
+    meta: ScoringMeta
     strengths: List[str] = []
     weaknesses: List[str] = []
-
-
-class SalesAnalysis(BaseModel):
-    meta: SalesAnalysisMeta
-    analysis: SalesAnalysisBlock
     criteria_scores: List[CriterionScore] = []
     stop_factors: List[StopFactor] = []
-    ai_coaching_tasks: List[CoachingTask] = []
+    coaching_tasks: List[CoachingTask] = []
+    # Доп. атрибуты звонка/чата
+    sentiment: str = ""          # positive | neutral | negative | mixed | ""
+    topics: List[str] = []
+    summary: str = ""            # короткое резюме (для звонка/чата)
 
 
-class TranscriptionOut(BaseModel):
-    id: str
-    filename: str
-    duration: Optional[float] = None
-    text: str
-    analysis: Optional[AnalysisResult] = None
-    sales_analysis: Optional[SalesAnalysis] = None
-    source: Optional[str] = None
-    bitrix_call_id: Optional[str] = None
-    bitrix_chat_id: Optional[str] = None
-    bitrix_manager: str = ""
-    bitrix_manager_id: str = ""
-    bitrix_phone: str = ""
-    bitrix_direction: str = ""
-    bitrix_channel: str = ""
-    bitrix_client: str = ""
-    bitrix_call_date: Optional[datetime] = None
-    messages_count: int = 0
+# ═══════════════════════════════════════════════════════════════════════════
+# Kind-специфичные подблоки
+# ═══════════════════════════════════════════════════════════════════════════
+
+class CallData(BaseModel):
+    bitrix_call_id: str = ""
+    phone: str = ""
+    direction: str = ""              # Входящий / Исходящий
+    record_url: str = ""
     has_audio: bool = False
-    language: Optional[str] = None
-    status: str
-    created_at: datetime
-    error: Optional[str] = None
+    language: str = ""
 
+
+class ChatData(BaseModel):
+    bitrix_chat_id: str = ""
+    channel: str = ""                # WhatsApp / Telegram / ...
+    client: str = ""
+    subject: str = ""
+    messages_count: int = 0
+
+
+class LeadCallRef(BaseModel):
+    """Ссылка на отдельный звонок, использованный в анализе лида."""
+    analysis_id: str = ""            # id записи kind=call в analyses
+    call_id: str = ""                # bitrix_call_id
+    date: Optional[datetime] = None
+    direction: str = ""
+    duration: int = 0
+    normalized_score: int = 0
+    grade: str = ""
+    analyzed: bool = False
+    skipped_reason: str = ""         # "" | no_record | too_large | failed:...
+
+
+class LeadData(BaseModel):
+    bitrix_lead_id: str = ""
+    title: str = ""
+    status_id: str = ""
+    status_name: str = ""
+    source_id: str = ""
+    source_name: str = ""
+    opportunity: float = 0.0
+    currency: str = ""
+    bitrix_url: str = ""
+    # Качественная сводка по лиду
+    summary: str = ""
+    client_request: str = ""
+    objections: List[str] = []
+    risk: str = "low"                # low | medium | high
+    risk_reason: str = ""
+    next_step: str = ""
+    calls_count: int = 0
+    comments_count: int = 0
+    call_refs: List[LeadCallRef] = []
+    input_hash: str = ""             # кэш-ключ агрегированного анализа
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Главная модель — запись в коллекции `analyses`
+# ═══════════════════════════════════════════════════════════════════════════
+
+AnalysisKind = Literal["call", "chat", "lead"]
+AnalysisStatus = Literal["processing", "done", "failed"]
+
+
+class AnalysisOut(BaseModel):
+    """То, что отдаёт API клиенту."""
+    id: str
+    kind: AnalysisKind
+    status: AnalysisStatus
+    title: str = ""                  # display name (filename / lead title)
+    date: Optional[datetime] = None  # для сортировки и dashboard (call_date / lead.created)
+    duration: int = 0                # секунды (для звонка)
+    manager: str = ""
+    manager_id: str = ""
+    source_text: str = ""            # транскрипт / агрегат текстов лида
+    scoring: Optional[Scoring] = None
+    call: Optional[CallData] = None
+    chat: Optional[ChatData] = None
+    lead: Optional[LeadData] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    error: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Аналитика (общая по всем kind)
+# ═══════════════════════════════════════════════════════════════════════════
 
 class OperatorStat(BaseModel):
     manager_id: str
     manager: str
-    calls: int
-    analyzed: int
+    total: int = 0                   # суммарно записей (звонки+лиды+чаты или фильтр)
+    calls: int = 0
+    leads: int = 0
+    chats: int = 0
+    analyzed: int = 0
     avg_score: Optional[float] = None
     total_duration: int = 0
-    last_call_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
 
 
 class OperatorDailyStat(BaseModel):
-    date: str
-    calls: int
-    analyzed: int
+    date: str                        # YYYY-MM-DD
+    total: int
+    calls: int = 0
+    leads: int = 0
+    chats: int = 0
     avg_score: Optional[float] = None
     total_duration: int = 0
 
@@ -149,29 +226,53 @@ class OperatorDailyStat(BaseModel):
 class OperatorDetail(BaseModel):
     manager_id: str
     manager: str
-    period_days: int = 5
+    period_days: int
     stats: OperatorStat
     daily: List[OperatorDailyStat] = []
-    analyses: List[TranscriptionOut] = []
+    analyses: List[AnalysisOut] = []
 
 
 class CriterionAverage(BaseModel):
-    criterion_id: str
-    criterion_name: str
+    id: str
+    name: str
+    category_id: str = ""
+    category_name: str = ""
     avg_score: float
+    max_score: int
     samples: int
 
 
+class KindCount(BaseModel):
+    calls: int = 0
+    leads: int = 0
+    chats: int = 0
+
+
+class DailyPoint(BaseModel):
+    date: str
+    total: int = 0
+    calls: int = 0
+    leads: int = 0
+    chats: int = 0
+    avg_score: Optional[float] = None
+
+
 class AnalyticsOverview(BaseModel):
-    total_calls: int
-    analyzed: int
+    total: int = 0
+    analyzed: int = 0
+    by_kind: KindCount = Field(default_factory=KindCount)
     avg_score: Optional[float] = None
     total_duration: int = 0
     sentiment_breakdown: dict = {}
+    grade_breakdown: dict = {}      # "Эталон": N, "Хороший": N, ...
     criteria: List[CriterionAverage] = []
     operators: List[OperatorStat] = []
-    daily: List[dict] = []
+    daily: List[DailyPoint] = []
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Bitrix-DTO (то, что отдаём для UI «Звонки» / «Лиды» — без анализа)
+# ═══════════════════════════════════════════════════════════════════════════
 
 class BitrixCall(BaseModel):
     id: str
@@ -182,7 +283,7 @@ class BitrixCall(BaseModel):
     manager: str = ""
     manager_id: str = ""
     record_url: str = ""
-    transcription_id: Optional[str] = None
+    analysis_id: Optional[str] = None  # id записи в analyses
     analyzed: bool = False
 
 
@@ -202,7 +303,7 @@ class BitrixChat(BaseModel):
     operator_id: str = ""
     started_at: Optional[datetime] = None
     messages_count: int = 0
-    transcription_id: Optional[str] = None
+    analysis_id: Optional[str] = None
     analyzed: bool = False
 
 
@@ -238,9 +339,11 @@ class BitrixLead(BaseModel):
     assigned_by: str = ""
     created_at: Optional[datetime] = None
     modified_at: Optional[datetime] = None
-    analysis_status: str = ""  # "" | "processing" | "done" | "failed"
-    analysis_score: int = 0
-    analysis_risk: str = ""  # "" | "low" | "medium" | "high"
+    # Доп. инфо о текущем анализе (если уже считался)
+    analysis_id: Optional[str] = None
+    analysis_status: str = ""
+    analysis_score: int = 0          # normalized 0..100
+    analysis_risk: str = ""
 
 
 class BitrixLeadsPage(BaseModel):
@@ -252,7 +355,7 @@ class BitrixLeadsPage(BaseModel):
 
 class BitrixContactValue(BaseModel):
     value: str
-    kind: str = ""  # WORK / MOBILE / HOME / etc.
+    kind: str = ""
 
 
 class BitrixLeadDetail(BaseModel):
@@ -290,50 +393,17 @@ class BitrixLeadDetail(BaseModel):
 
 class BitrixLeadTimelineEntry(BaseModel):
     id: str
-    kind: str  # 'comment' | 'activity'
-    activity_type: str = ""  # call, email, meeting, task, other
+    kind: str                        # comment | activity
+    activity_type: str = ""
     subject: str = ""
     text: str = ""
     author_id: str = ""
     author: str = ""
     completed: bool = False
-    direction: str = ""  # in / out (для звонков-активностей)
+    direction: str = ""
     date: Optional[datetime] = None
 
 
 class BitrixLeadActivity(BaseModel):
     timeline: List[BitrixLeadTimelineEntry] = []
     calls: List[BitrixCall] = []
-
-
-class LeadAnalysisCallRef(BaseModel):
-    call_id: str
-    transcription_id: str = ""
-    date: Optional[datetime] = None
-    direction: str = ""
-    duration: int = 0
-    score: int = 0
-    grade: str = ""
-    analyzed: bool = False
-    skipped_reason: str = ""  # "no_record" | "transcription_failed" | ""
-
-
-class LeadAnalysisOut(BaseModel):
-    lead_id: str
-    status: str = "done"  # "done" | "processing" | "failed"
-    summary: str = ""
-    client_request: str = ""
-    objections: List[str] = []
-    manager_pros: List[str] = []
-    manager_cons: List[str] = []
-    risk: str = "low"  # low | medium | high
-    risk_reason: str = ""
-    next_step: str = ""
-    sales_analysis: Optional[SalesAnalysis] = None  # та же карта оценки (19 критериев + 4 стоп-фактора), агрегированная по лиду
-    calls_count: int = 0
-    comments_count: int = 0
-    calls: List[LeadAnalysisCallRef] = []
-    error: str = ""
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    input_hash: str = ""

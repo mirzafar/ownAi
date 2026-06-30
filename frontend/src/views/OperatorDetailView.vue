@@ -225,9 +225,10 @@ function statusLabel(s) {
 }
 
 function preview(item) {
-  if (item.sales_analysis?.meta?.system_verdict) return item.sales_analysis.meta.system_verdict
-  if (item.analysis?.summary) return item.analysis.summary
-  const t = item.text || ''
+  if (item.scoring?.meta?.verdict) return item.scoring.meta.verdict
+  if (item.lead?.summary) return item.lead.summary
+  if (item.scoring?.summary) return item.scoring.summary
+  const t = item.source_text || ''
   return t.length > 200 ? t.slice(0, 200) + '…' : t || 'Обработка…'
 }
 
@@ -251,7 +252,7 @@ onMounted(load)
           <h1 class="profile-name">{{ detail.manager || 'Без имени' }}</h1>
           <div class="profile-meta">
             <span>ID: <b>{{ detail.manager_id || '—' }}</b></span>
-            <span>· Последний звонок: <b>{{ fmtDate(detail.stats.last_call_at) }}</b></span>
+            <span>· Последний: <b>{{ fmtDate(detail.stats.last_activity_at) }}</b></span>
           </div>
         </div>
         <div class="profile-score" :class="scoreClass(detail.stats.avg_score)">
@@ -472,25 +473,25 @@ onMounted(load)
             v-for="item in detail.analyses"
             :key="item.id"
             class="row-item"
-            @click="router.push(`/t/${item.id}`)"
+            @click="router.push(item.kind === 'lead' ? `/leads/${item.lead?.bitrix_lead_id}` : `/t/${item.id}`)"
           >
             <div
-              v-if="item.sales_analysis?.meta?.total_score != null"
+              v-if="item.scoring?.meta?.normalized_score"
               class="score-pill"
-              :class="scoreClass(item.sales_analysis.meta.total_score)"
+              :class="scoreClass(item.scoring.meta.normalized_score)"
             >
-              {{ item.sales_analysis.meta.total_score }}
+              {{ item.scoring.meta.normalized_score }}
             </div>
             <div v-else class="score-pill empty">—</div>
 
             <div class="info">
-              <div class="row-title">{{ item.filename }}</div>
+              <div class="row-title">{{ item.title }}</div>
               <div class="row-summary">{{ preview(item) }}</div>
               <div class="row-meta">
-                <span>{{ fmtDate(item.bitrix_call_date || item.created_at) }}</span>
-                <span v-if="item.bitrix_direction" class="meta-chip">{{ item.bitrix_direction }}</span>
-                <span v-if="item.analysis?.sentiment" class="badge" :class="item.analysis.sentiment">
-                  {{ item.analysis.sentiment }}
+                <span>{{ fmtDate(item.date || item.created_at) }}</span>
+                <span v-if="item.call?.direction" class="meta-chip">{{ item.call.direction }}</span>
+                <span v-if="item.scoring?.sentiment" class="badge" :class="item.scoring.sentiment">
+                  {{ item.scoring.sentiment }}
                 </span>
                 <span class="badge" :class="item.status">{{ statusLabel(item.status) }}</span>
               </div>
@@ -767,7 +768,15 @@ onMounted(load)
 .score-pill.ok { background: var(--brand-soft); color: var(--brand); }
 .score-pill.warn { background: var(--warn-soft); color: var(--warn); }
 .score-pill.bad { background: var(--danger-soft); color: var(--danger); }
-.score-pill.empty { background: var(--surface-3); color: var(--text-muted); font-size: 16px; }
+.score-pill.empty {
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
 
 .info { flex: 1; min-width: 0; }
 .row-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

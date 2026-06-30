@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import ensure_indexes
-from .routers import analytics, auth, bitrix, transcriptions
+from .routers import analyses, analytics, auth, bitrix
 
 
 @asynccontextmanager
@@ -14,7 +14,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="ownAi", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="ownAi", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,7 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
-app.include_router(transcriptions.router)
+app.include_router(analyses.router)
 app.include_router(bitrix.router)
 app.include_router(analytics.router)
 

@@ -139,7 +139,7 @@ onMounted(load)
             <span class="dot-sep">·</span>
             <span>Длит.: <b>{{ fmtDuration(op.total_duration) }}</b></span>
             <span class="dot-sep">·</span>
-            <span>Последний: <b>{{ fmtDate(op.last_call_at) }}</b></span>
+            <span>Последний: <b>{{ fmtDate(op.last_activity_at) }}</b></span>
           </div>
         </div>
         <div class="score-pill" :class="scoreClass(op.avg_score)">
@@ -262,7 +262,12 @@ onMounted(load)
 .score-pill.ok { background: var(--brand-soft); color: var(--brand-hover); }
 .score-pill.warn { background: var(--warn-soft); color: var(--warn); }
 .score-pill.bad { background: var(--danger-soft); color: var(--danger); }
-.score-pill.empty { background: var(--surface-3); color: var(--text-muted); }
+.score-pill.empty {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-muted);
+  font-weight: 500;
+}
 
 .open-btn {
   width: 32px; height: 32px;

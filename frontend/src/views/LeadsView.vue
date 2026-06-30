@@ -46,8 +46,38 @@ const activeFiltersCount = computed(() => {
   return n
 })
 
+const FILTERS_KEY = 'ownai.leads.filters'
+
 function readFromQuery() {
   const q = route.query
+  const hasAnyInQuery = ['status_id', 'source_id', 'search', 'date_from', 'date_to', 'page']
+    .some(k => typeof q[k] === 'string')
+
+  // Если URL без query (например, заход по сайдбару) — пытаемся восстановить
+  // последний выбор пользователя из sessionStorage. Иначе берём из URL.
+  if (!hasAnyInQuery) {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(FILTERS_KEY) || 'null')
+      if (saved && typeof saved === 'object') {
+        filters.value = {
+          status_id: saved.status_id || '',
+          source_id: saved.source_id || '',
+          search: saved.search || '',
+          date_from: saved.date_from || '',
+          date_to: saved.date_to || '',
+          page: Math.max(1, parseInt(saved.page, 10) || 1),
+        }
+        searchDraft.value = filters.value.search
+        // Запишем восстановленные фильтры в URL, чтобы дальше всё работало
+        // как при прямом заходе со ссылки.
+        if (Object.values(filters.value).some(v => v && v !== 1)) {
+          writeToQuery({}, { replace: true })
+        }
+        return
+      }
+    } catch {}
+  }
+
   filters.value = {
     status_id: typeof q.status_id === 'string' ? q.status_id : '',
     source_id: typeof q.source_id === 'string' ? q.source_id : '',
@@ -59,7 +89,7 @@ function readFromQuery() {
   searchDraft.value = filters.value.search
 }
 
-function writeToQuery(patch = {}) {
+function writeToQuery(patch = {}, opts = { replace: true }) {
   const next = { ...filters.value, ...patch }
   filters.value = next
   const query = {}
@@ -67,7 +97,12 @@ function writeToQuery(patch = {}) {
     if (v === '' || v == null || (k === 'page' && v === 1)) continue
     query[k] = String(v)
   }
-  router.replace({ path: '/leads', query })
+  try {
+    sessionStorage.setItem(FILTERS_KEY, JSON.stringify(next))
+  } catch {}
+  const nav = { path: '/leads', query }
+  if (opts.replace) router.replace(nav)
+  else router.push(nav)
 }
 
 async function loadStatuses() {

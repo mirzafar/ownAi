@@ -83,7 +83,7 @@ function startAnalyze(item) {
 }
 
 function openExisting(item) {
-  if (item.transcription_id) router.push(`/t/${item.transcription_id}`)
+  if (item.analysis_id) router.push(`/t/${item.analysis_id}`)
 }
 
 function togglePlay(item) {

@@ -24,9 +24,9 @@ const retranscribing = computed(() =>
 async function load() {
   loading.value = true
   try {
-    const { data } = await api.get(`/transcriptions/${route.params.id}`)
+    const { data } = await api.get(`/analyses/${route.params.id}`)
     item.value = data
-    if (data.has_audio) await fetchAudio()
+    if (data.call?.has_audio) await fetchAudio()
   } catch (e) {
     error.value = e.response?.data?.detail || 'Не удалось загрузить'
   } finally {
@@ -36,7 +36,7 @@ async function load() {
 
 async function fetchAudio() {
   try {
-    const { data } = await api.get(`/transcriptions/${route.params.id}/audio`, {
+    const { data } = await api.get(`/analyses/${route.params.id}/audio`, {
       responseType: 'blob',
     })
     if (audioUrl.value) URL.revokeObjectURL(audioUrl.value)
@@ -67,7 +67,7 @@ function fmtDuration(sec) {
 
 async function remove() {
   if (!confirm('Удалить этот анализ?')) return
-  await api.delete(`/transcriptions/${route.params.id}`)
+  await api.delete(`/analyses/${route.params.id}`)
   router.push('/analyses')
 }
 
@@ -80,11 +80,11 @@ async function reanalyze() {
       {
         kind: 'reanalyze',
         meta: { id: tid },
-        label: `Анализ · ${item.value?.filename || tid}`,
+        label: `Анализ · ${item.value?.title || tid}`,
         hint: 'Выполняется повторный анализ диалога',
       },
       async () => {
-        const { data } = await api.post(`/transcriptions/${tid}/reanalyze`)
+        const { data } = await api.post(`/analyses/${tid}/reanalyze`)
         return data
       }
     )
@@ -108,11 +108,11 @@ async function retranscribe() {
       {
         kind: 'retranscribe',
         meta: { id: tid },
-        label: `Транскрайб · ${item.value?.filename || tid}`,
+        label: `Транскрайб · ${item.value?.title || tid}`,
         hint: 'Скачиваем аудио, расшифровываем и анализируем',
       },
       async () => {
-        const { data } = await api.post(`/transcriptions/${tid}/retranscribe`)
+        const { data } = await api.post(`/analyses/${tid}/retranscribe`)
         return data
       }
     )
@@ -125,8 +125,8 @@ async function retranscribe() {
 }
 
 async function copyText() {
-  if (!item.value?.text) return
-  await navigator.clipboard.writeText(item.value.text)
+  if (!item.value?.source_text) return
+  await navigator.clipboard.writeText(item.value.source_text)
   copied.value = true
   setTimeout(() => (copied.value = false), 1500)
 }
@@ -137,9 +137,10 @@ function fmtDate(s) {
 }
 
 function scoreClass(score) {
-  if (score >= 80) return 'good'
-  if (score >= 60) return 'ok'
-  if (score >= 40) return 'warn'
+  if (score == null) return 'empty'
+  if (score >= 90) return 'good'
+  if (score >= 75) return 'ok'
+  if (score >= 60) return 'warn'
   return 'bad'
 }
 
@@ -160,8 +161,10 @@ function gradeClass(grade) {
   return 'bad'
 }
 
+const scoring = computed(() => item.value?.scoring || null)
+
 const criteriaByCategory = computed(() => {
-  const list = item.value?.sales_analysis?.criteria_scores || []
+  const list = scoring.value?.criteria_scores || []
   const groups = []
   const seen = new Map()
   for (const c of list) {
@@ -177,12 +180,12 @@ const criteriaByCategory = computed(() => {
 })
 
 const stopFactorsTriggered = computed(
-  () => (item.value?.sales_analysis?.stop_factors || []).filter(s => s.triggered)
+  () => (scoring.value?.stop_factors || []).filter(s => s.triggered)
 )
 
 const chatMessages = computed(() => {
-  if (item.value?.source !== 'bitrix_chat' || !item.value?.text) return []
-  const lines = item.value.text.split(/\r?\n/)
+  if (item.value?.kind !== 'chat' || !item.value?.source_text) return []
+  const lines = item.value.source_text.split(/\r?\n/)
   const messages = []
   for (const raw of lines) {
     const line = raw.trim()
@@ -192,7 +195,7 @@ const chatMessages = computed(() => {
       const author = m[1].trim()
       const text = m[2]
       const isOperator = author.toLowerCase() === 'менеджер' || author.toLowerCase() === 'оператор'
-        || (item.value.bitrix_manager && author === item.value.bitrix_manager)
+        || (item.value.manager && author === item.value.manager)
       messages.push({ author, text, mine: isOperator })
     } else if (messages.length) {
       messages[messages.length - 1].text += '\n' + line
@@ -219,20 +222,19 @@ onMounted(load)
     <template v-else-if="item">
       <div class="head">
         <div>
-          <h1 class="page-title" style="margin-bottom:6px;">{{ item.filename }}</h1>
+          <h1 class="page-title" style="margin-bottom:6px;">{{ item.title }}</h1>
           <div class="row" style="gap:8px;flex-wrap:wrap;">
             <span class="badge" :class="item.status">{{ item.status }}</span>
             <span class="badge">{{ fmtDate(item.created_at) }}</span>
-            <span v-if="item.analysis?.language" class="badge">{{ item.analysis.language.toUpperCase() }}</span>
-            <span v-if="item.analysis?.sentiment" class="badge" :class="item.analysis.sentiment">
-              {{ item.analysis.sentiment }}
+            <span v-if="scoring?.sentiment" class="badge" :class="scoring.sentiment">
+              {{ scoring.sentiment }}
             </span>
           </div>
         </div>
         <div class="spacer"></div>
         <div class="head-actions">
           <button
-            v-if="item.has_audio"
+            v-if="item.call?.has_audio"
             class="ghost"
             :disabled="reanalyzing || retranscribing"
             title="Заново скачать аудио, расшифровать и проанализировать"
@@ -254,54 +256,54 @@ onMounted(load)
         </div>
       </div>
 
-      <div v-if="item.source === 'bitrix_chat'" class="call-card card">
+      <div v-if="item.kind === 'chat'" class="call-card card">
         <div class="call-grid">
-          <div v-if="item.bitrix_manager" class="call-cell">
+          <div v-if="item.manager" class="call-cell">
             <div class="call-cell-label">Оператор</div>
             <div class="call-cell-value">
-              <div class="op-avatar-sm">{{ item.bitrix_manager[0]?.toUpperCase() }}</div>
-              {{ item.bitrix_manager }}
+              <div class="op-avatar-sm">{{ item.manager[0]?.toUpperCase() }}</div>
+              {{ item.manager }}
             </div>
           </div>
-          <div v-if="item.bitrix_channel" class="call-cell">
+          <div v-if="item.chat?.channel" class="call-cell">
             <div class="call-cell-label">Канал</div>
-            <div class="call-cell-value">{{ item.bitrix_channel }}</div>
+            <div class="call-cell-value">{{ item.chat.channel }}</div>
           </div>
-          <div v-if="item.bitrix_client" class="call-cell">
+          <div v-if="item.chat?.client" class="call-cell">
             <div class="call-cell-label">Клиент</div>
-            <div class="call-cell-value">{{ item.bitrix_client }}</div>
+            <div class="call-cell-value">{{ item.chat.client }}</div>
           </div>
-          <div v-if="item.bitrix_call_date" class="call-cell">
+          <div v-if="item.date" class="call-cell">
             <div class="call-cell-label">Дата</div>
-            <div class="call-cell-value">{{ fmtCallDate(item.bitrix_call_date) }}</div>
+            <div class="call-cell-value">{{ fmtCallDate(item.date) }}</div>
           </div>
-          <div v-if="item.messages_count" class="call-cell">
+          <div v-if="item.chat?.messages_count" class="call-cell">
             <div class="call-cell-label">Сообщений</div>
-            <div class="call-cell-value mono">{{ item.messages_count }}</div>
+            <div class="call-cell-value mono">{{ item.chat.messages_count }}</div>
           </div>
         </div>
       </div>
 
-      <div v-if="item.source === 'bitrix_call'" class="call-card card">
+      <div v-if="item.kind === 'call'" class="call-card card">
         <div class="call-grid">
-          <div v-if="item.bitrix_manager" class="call-cell">
+          <div v-if="item.manager" class="call-cell">
             <div class="call-cell-label">Оператор</div>
             <div class="call-cell-value">
-              <div class="op-avatar-sm">{{ item.bitrix_manager[0]?.toUpperCase() }}</div>
-              {{ item.bitrix_manager }}
+              <div class="op-avatar-sm">{{ item.manager[0]?.toUpperCase() }}</div>
+              {{ item.manager }}
             </div>
           </div>
-          <div v-if="item.bitrix_phone" class="call-cell">
+          <div v-if="item.call?.phone" class="call-cell">
             <div class="call-cell-label">Телефон</div>
-            <div class="call-cell-value mono">{{ item.bitrix_phone }}</div>
+            <div class="call-cell-value mono">{{ item.call.phone }}</div>
           </div>
-          <div v-if="item.bitrix_direction" class="call-cell">
+          <div v-if="item.call?.direction" class="call-cell">
             <div class="call-cell-label">Тип</div>
-            <div class="call-cell-value">{{ item.bitrix_direction }}</div>
+            <div class="call-cell-value">{{ item.call.direction }}</div>
           </div>
-          <div v-if="item.bitrix_call_date" class="call-cell">
+          <div v-if="item.date" class="call-cell">
             <div class="call-cell-label">Дата звонка</div>
-            <div class="call-cell-value">{{ fmtCallDate(item.bitrix_call_date) }}</div>
+            <div class="call-cell-value">{{ fmtCallDate(item.date) }}</div>
           </div>
           <div v-if="item.duration" class="call-cell">
             <div class="call-cell-label">Длительность</div>
@@ -311,35 +313,35 @@ onMounted(load)
         <div v-if="audioUrl" class="call-audio">
           <audio :src="audioUrl" controls preload="metadata" style="width:100%;"></audio>
         </div>
-        <div v-else-if="item.has_audio" class="call-audio-loading">
+        <div v-else-if="item.call?.has_audio" class="call-audio-loading">
           <span class="spinner"></span> Загрузка записи…
         </div>
       </div>
 
       <div v-if="item.error" class="error-msg" style="margin-bottom:18px;">{{ item.error }}</div>
 
-      <!-- OKO Sales Analysis -->
-      <template v-if="item.sales_analysis">
+      <!-- Swiss Collection scoring -->
+      <template v-if="scoring">
         <div class="oko-hero card">
           <div class="oko-hero-left">
             <div class="oko-tag">Swiss Collection by RAAF Group · Карта оценки звонка</div>
-            <p class="oko-verdict">{{ item.sales_analysis.meta.system_verdict || '—' }}</p>
-            <div v-if="item.sales_analysis.meta.grade" class="oko-grade" :class="gradeClass(item.sales_analysis.meta.grade)">
-              {{ item.sales_analysis.meta.grade }}
+            <p class="oko-verdict">{{ scoring.meta.verdict || '—' }}</p>
+            <div v-if="scoring.meta.grade" class="oko-grade" :class="gradeClass(scoring.meta.grade)">
+              {{ scoring.meta.grade }}
             </div>
           </div>
-          <div class="oko-score" :class="scoreClass(item.sales_analysis.meta.total_score)">
+          <div class="oko-score" :class="scoreClass(scoring.meta.normalized_score)">
             <svg viewBox="0 0 100 100" class="score-ring">
               <circle cx="50" cy="50" r="42" class="ring-bg" />
               <circle
                 cx="50" cy="50" r="42"
                 class="ring-fg"
                 :stroke-dasharray="264"
-                :stroke-dashoffset="264 - (264 * item.sales_analysis.meta.total_score / 100)"
+                :stroke-dashoffset="264 - (264 * scoring.meta.normalized_score / 100)"
               />
             </svg>
             <div class="score-text">
-              <div class="score-value">{{ item.sales_analysis.meta.total_score }}</div>
+              <div class="score-value">{{ scoring.meta.normalized_score }}</div>
               <div class="score-label">из 100</div>
             </div>
           </div>
@@ -348,8 +350,8 @@ onMounted(load)
         <div class="oko-grid">
           <div class="card sw-card">
             <h2>Сильные стороны</h2>
-            <ul v-if="item.sales_analysis.analysis.strengths.length" class="sw-list strengths">
-              <li v-for="(s, i) in item.sales_analysis.analysis.strengths" :key="i">
+            <ul v-if="scoring.strengths.length" class="sw-list strengths">
+              <li v-for="(s, i) in scoring.strengths" :key="i">
                 <span class="sw-mark"><Check :size="11" /></span><span>{{ s }}</span>
               </li>
             </ul>
@@ -357,8 +359,8 @@ onMounted(load)
           </div>
           <div class="card sw-card">
             <h2>Слабые стороны</h2>
-            <ul v-if="item.sales_analysis.analysis.weaknesses.length" class="sw-list weaknesses">
-              <li v-for="(w, i) in item.sales_analysis.analysis.weaknesses" :key="i">
+            <ul v-if="scoring.weaknesses.length" class="sw-list weaknesses">
+              <li v-for="(w, i) in scoring.weaknesses" :key="i">
                 <span class="sw-mark">!</span><span>{{ w }}</span>
               </li>
             </ul>
@@ -371,7 +373,7 @@ onMounted(load)
           <div class="stop-list">
             <div
               v-for="s in stopFactorsTriggered"
-              :key="s.factor_id"
+              :key="s.id"
               class="stop-item"
             >
               <div class="stop-head">
@@ -395,11 +397,11 @@ onMounted(load)
               <div class="criteria-list">
                 <div
                   v-for="c in g.items"
-                  :key="c.criterion_id"
+                  :key="c.id"
                   class="crit"
                 >
                   <div class="crit-head">
-                    <div class="crit-name">{{ c.criterion_name }}</div>
+                    <div class="crit-name">{{ c.name }}</div>
                     <div class="crit-score" :class="critClass(c.score, c.max_score)">
                       {{ c.score }} / {{ c.max_score }}
                     </div>
@@ -418,11 +420,11 @@ onMounted(load)
           </div>
         </div>
 
-        <div v-if="item.sales_analysis.ai_coaching_tasks.length" class="card tasks-card">
+        <div v-if="scoring.coaching_tasks.length" class="card tasks-card">
           <h2>Задачи на развитие</h2>
           <div class="tasks-grid">
             <div
-              v-for="(task, i) in item.sales_analysis.ai_coaching_tasks"
+              v-for="(task, i) in scoring.coaching_tasks"
               :key="i"
               class="task"
             >
@@ -438,7 +440,7 @@ onMounted(load)
           </div>
         </div>
 
-        <div v-if="item.source === 'bitrix_chat'" class="card transcript-card transcript-full">
+        <div v-if="item.kind === 'chat'" class="card transcript-card transcript-full">
           <div class="card-head">
             <h2>Переписка</h2>
             <button class="ghost small btn-inline" @click="copyText">
@@ -468,47 +470,15 @@ onMounted(load)
               {{ copied ? 'Скопировано' : 'Копировать' }}
             </button>
           </div>
-          <div v-if="item.text" class="transcript">{{ item.text }}</div>
+          <div v-if="item.source_text" class="transcript">{{ item.source_text }}</div>
           <div v-else class="empty-inline">Транскрипт отсутствует.</div>
         </div>
       </template>
 
-      <!-- Legacy generic analysis -->
-      <div v-else class="grid">
-        <div class="card transcript-card">
-          <div class="card-head">
-            <h2>Transcript</h2>
-            <button class="ghost small btn-inline" @click="copyText">
-              <Check v-if="copied" :size="13" />
-              {{ copied ? 'Copied' : 'Copy' }}
-            </button>
-          </div>
-          <div v-if="item.text" class="transcript">{{ item.text }}</div>
-          <div v-else class="empty-inline">No transcript available.</div>
-        </div>
-
-        <div class="col" style="gap:16px;">
-          <div class="card">
-            <h2>Summary</h2>
-            <p class="summary">{{ item.analysis?.summary || '—' }}</p>
-          </div>
-
-          <div class="card">
-            <h2>Topics</h2>
-            <div v-if="item.analysis?.topics?.length" class="topics">
-              <span v-for="t in item.analysis.topics" :key="t" class="topic">#{{ t }}</span>
-            </div>
-            <div v-else class="empty-inline">No topics identified.</div>
-          </div>
-
-          <div class="card">
-            <h2>Action items</h2>
-            <ul v-if="item.analysis?.action_items?.length" class="actions-list">
-              <li v-for="(a, i) in item.analysis.action_items" :key="i">{{ a }}</li>
-            </ul>
-            <div v-else class="empty-inline">No action items.</div>
-          </div>
-        </div>
+      <div v-else class="card" style="padding:40px 24px; text-align:center;">
+        <p class="empty-inline">
+          {{ item.status === 'processing' ? 'Идёт обработка…' : 'Анализ пока недоступен.' }}
+        </p>
       </div>
     </template>
 

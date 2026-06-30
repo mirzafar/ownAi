@@ -1,3 +1,10 @@
+"""Интеграция с Bitrix24: звонки, чаты, лиды.
+
+После рефакторинга все запуски анализа пишут в единую коллекцию `analyses`
+через `analysis_service`. Этот файл содержит только Bitrix-специфичный код
+(нормализация ответов API, парсинг карточек лидов) + тонкие endpoint-ы.
+"""
+
 import asyncio
 import hashlib
 import logging
@@ -5,15 +12,15 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
-from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 logger = logging.getLogger(__name__)
 
 from ..auth import get_current_user
 from ..config import settings
-from ..database import audio_bucket, lead_analyses, transcriptions
+from ..database import analyses, audio_bucket
 from ..models import (
+    AnalysisOut,
     BitrixCall,
     BitrixCallsPage,
     BitrixChat,
@@ -25,21 +32,19 @@ from ..models import (
     BitrixLeadStatus,
     BitrixLeadTimelineEntry,
     BitrixLeadsPage,
-    LeadAnalysisCallRef,
-    LeadAnalysisOut,
-    TranscriptionOut,
+    LeadCallRef,
 )
-from ..openai_service import (
-    analyze_lead_overall,
-    analyze_sales_call,
-    transcribe_audio,
-)
-from .transcriptions import _doc_to_out
+from ..openai_service import analyze_lead_aggregate, analyze_unit, transcribe_audio
+from ..services import analysis_service as svc
 
 router = APIRouter(prefix="/api/bitrix", tags=["bitrix"])
 
-MAX_RECORD_SIZE = 50 * 1024 * 1024  # 50 MB — записи звонков могут быть длиннее лимита OpenAI; обрежем при необходимости
+MAX_RECORD_SIZE = 50 * 1024 * 1024
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Низкоуровневые helper-ы для Bitrix REST
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _webhook_base() -> str:
     base = (settings.bitrix_webhook_url or "").strip()
@@ -54,7 +59,6 @@ def _webhook_base() -> str:
 
 
 def _portal_base() -> str:
-    """Корневой URL портала Bitrix24, выведенный из webhook (без /rest/.../...)."""
     base = (settings.bitrix_webhook_url or "").strip()
     if not base:
         return ""
@@ -73,9 +77,6 @@ def _lead_portal_url(lead_id: str) -> str:
 
 async def _b24(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{_webhook_base()}{method}.json"
-    print()
-    print('url', url, payload)
-    print()
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, json=payload)
         if resp.status_code >= 400:
@@ -92,31 +93,33 @@ async def _b24(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def _normalize_call(raw: dict[str, Any], users_by_id: dict[str, str]) -> BitrixCall:
-    raw_date = raw.get("CALL_START_DATE") or raw.get("DATE_CREATE")
-    parsed_date: Optional[datetime] = None
-    if raw_date:
+def _parse_b24_dt(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _to_b24_iso(value: Optional[str], end_of_day: bool = False) -> Optional[str]:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if "T" in raw:
         try:
-            parsed_date = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
         except ValueError:
-            parsed_date = None
-
-    direction_map = {"1": "Входящий", "2": "Исходящий"}
-    direction = direction_map.get(str(raw.get("CALL_TYPE", "")), "")
-
-    portal_user_id = str(raw.get("PORTAL_USER_ID") or "")
-    manager = users_by_id.get(portal_user_id, "")
-
-    return BitrixCall(
-        id=str(raw.get("ID") or raw.get("CALL_ID") or ""),
-        phone=str(raw.get("PHONE_NUMBER") or ""),
-        date=parsed_date,
-        duration=int(raw.get("CALL_DURATION") or 0),
-        direction=direction,
-        manager=manager,
-        manager_id=portal_user_id,
-        record_url=str(raw.get("CALL_RECORD_URL") or raw.get("RECORD_FILE_ID") or ""),
-    )
+            return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return dt.isoformat()
 
 
 async def _fetch_users(ids: list[str]) -> dict[str, str]:
@@ -124,12 +127,52 @@ async def _fetch_users(ids: list[str]) -> dict[str, str]:
     if not ids:
         return {}
     data = await _b24("user.get", {"FILTER": {"ID": ids}})
-    result: dict[str, str] = {}
+    out: dict[str, str] = {}
     for u in data.get("result", []) or []:
         uid = str(u.get("ID"))
         name = " ".join(filter(None, [u.get("NAME"), u.get("LAST_NAME")])).strip() or u.get("EMAIL") or f"#{uid}"
-        result[uid] = name
-    return result
+        out[uid] = name
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Звонки
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _normalize_call(raw: dict[str, Any], users_by_id: dict[str, str]) -> BitrixCall:
+    direction_map = {"1": "Входящий", "2": "Исходящий"}
+    portal_user_id = str(raw.get("PORTAL_USER_ID") or "")
+    return BitrixCall(
+        id=str(raw.get("ID") or raw.get("CALL_ID") or ""),
+        phone=str(raw.get("PHONE_NUMBER") or ""),
+        date=_parse_b24_dt(raw.get("CALL_START_DATE") or raw.get("DATE_CREATE")),
+        duration=int(raw.get("CALL_DURATION") or 0),
+        direction=direction_map.get(str(raw.get("CALL_TYPE", "")), ""),
+        manager=users_by_id.get(portal_user_id, ""),
+        manager_id=portal_user_id,
+        record_url=str(raw.get("CALL_RECORD_URL") or raw.get("RECORD_FILE_ID") or ""),
+    )
+
+
+async def _enrich_calls_with_analysis(user: dict[str, Any], calls: list[BitrixCall]) -> None:
+    if not calls:
+        return
+    ids = [c.id for c in calls if c.id]
+    if not ids:
+        return
+    cursor = analyses.find(
+        {"user_id": user["_id"], "kind": "call", "call.bitrix_call_id": {"$in": ids}},
+        {"_id": 1, "call.bitrix_call_id": 1, "status": 1},
+    )
+    by_call: dict[str, dict] = {}
+    async for d in cursor:
+        cid = (d.get("call") or {}).get("bitrix_call_id") or ""
+        by_call[str(cid)] = d
+    for c in calls:
+        d = by_call.get(c.id)
+        if d:
+            c.analysis_id = str(d["_id"])
+            c.analyzed = d.get("status") == "done"
 
 
 @router.get("/calls", response_model=BitrixCallsPage)
@@ -154,33 +197,14 @@ async def list_calls(
     start = (page - 1) * page_size
     data = await _b24(
         "voximplant.statistic.get",
-        {
-            "FILTER": filt,
-            "SORT": "CALL_START_DATE",
-            "ORDER": "DESC",
-            "start": start,
-        },
+        {"FILTER": filt, "SORT": "CALL_START_DATE", "ORDER": "DESC", "start": start},
     )
     raw_items = data.get("result", []) or []
     total = int(data.get("total", len(raw_items)))
 
-    user_ids = [str(r.get("PORTAL_USER_ID") or "") for r in raw_items]
-    users_map = await _fetch_users(user_ids)
-
+    users_map = await _fetch_users([str(r.get("PORTAL_USER_ID") or "") for r in raw_items])
     items = [_normalize_call(r, users_map) for r in raw_items][:page_size]
-
-    if items:
-        cursor = transcriptions.find(
-            {"user_id": user["_id"], "bitrix_call_id": {"$in": [c.id for c in items]}},
-            {"_id": 1, "bitrix_call_id": 1, "status": 1},
-        )
-        analyzed = {doc["bitrix_call_id"]: doc async for doc in cursor}
-        for c in items:
-            doc = analyzed.get(c.id)
-            if doc:
-                c.transcription_id = str(doc["_id"])
-                c.analyzed = doc.get("status") == "done"
-
+    await _enrich_calls_with_analysis(user, items)
     return BitrixCallsPage(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -188,18 +212,19 @@ async def _ensure_call_analyzed(
     user: dict[str, Any],
     raw: dict[str, Any],
     users_map: dict[str, str],
-) -> tuple[Optional[dict[str, Any]], str]:
-    """Гарантирует, что для звонка есть готовая транскрипция+sales_analysis.
-    Возвращает (doc, reason). При успехе reason="". При пропуске doc=None, reason описывает причину
-    ("no_record", "empty_recording", "too_large", "download_failed:..", "failed:..").
-    Используется и в `/calls/{id}/analyze`, и в lead-level анализе.
+) -> tuple[Optional[dict], str]:
+    """Возвращает (документ analyses, reason). reason="" — успех.
+
+    Если документ уже done — возвращается как есть. Иначе скачиваем запись,
+    транскрибируем и оцениваем.
     """
     call = _normalize_call(raw, users_map)
-    call_id = call.id
-    if not call_id:
+    if not call.id:
         return None, "invalid_id"
 
-    existing = await transcriptions.find_one({"user_id": user["_id"], "bitrix_call_id": call_id})
+    existing = await analyses.find_one({
+        "user_id": user["_id"], "kind": "call", "call.bitrix_call_id": call.id,
+    })
     if existing and existing.get("status") == "done":
         return existing, ""
 
@@ -217,89 +242,67 @@ async def _ensure_call_analyzed(
         if len(audio_bytes) > MAX_RECORD_SIZE:
             return None, "too_large"
 
-        now = datetime.now(timezone.utc)
-        filename = f"bitrix-call-{call_id}.mp3"
-        base_doc = {
-            "user_id": user["_id"],
-            "filename": filename,
-            "source": "bitrix_call",
-            "bitrix_call_id": call_id,
-            "bitrix_phone": call.phone,
-            "bitrix_manager": call.manager,
-            "bitrix_manager_id": call.manager_id,
-            "bitrix_direction": call.direction,
-            "bitrix_call_date": call.date,
-            "duration": call.duration,
-            "size": len(audio_bytes),
-            "status": "processing",
-            "created_at": now,
-        }
-        if existing:
-            tid = existing["_id"]
-            if existing.get("audio_file_id"):
-                try:
-                    await audio_bucket.delete(existing["audio_file_id"])
-                except Exception:
-                    pass
-            await transcriptions.update_one({"_id": tid}, {"$set": base_doc})
-        else:
-            result = await transcriptions.insert_one(base_doc)
-            tid = result.inserted_id
-
+        # Заливаем аудио в GridFS
+        filename = f"bitrix-call-{call.id}.mp3"
+        # Удалим старый аудио-файл если был
+        if existing and existing.get("audio_file_id"):
+            try:
+                await audio_bucket.delete(existing["audio_file_id"])
+            except Exception:
+                pass
         audio_file_id = await audio_bucket.upload_from_stream(
-            filename,
-            audio_bytes,
+            filename, audio_bytes,
             metadata={
-                "user_id": user["_id"],
-                "transcription_id": tid,
-                "bitrix_call_id": call_id,
+                "user_id": user["_id"], "bitrix_call_id": call.id,
                 "content_type": "audio/mpeg",
             },
         )
-        await transcriptions.update_one(
-            {"_id": tid},
-            {"$set": {"audio_file_id": audio_file_id, "audio_content_type": "audio/mpeg"}},
-        )
 
         text = await transcribe_audio(audio_bytes, filename)
-        sales = await analyze_sales_call(text, source="call")
-        await transcriptions.update_one(
-            {"_id": tid},
-            {"$set": {
-                "text": text,
-                "sales_analysis": sales.model_dump(),
-                "status": "done",
-                "error": None,
-            }},
+        scoring = await analyze_unit(text, source="call")
+
+        doc = await svc.upsert_call(
+            user_id=user["_id"],
+            bitrix_call_id=call.id,
+            title=filename,
+            date=call.date,
+            duration=call.duration,
+            phone=call.phone,
+            direction=call.direction,
+            manager=call.manager,
+            manager_id=call.manager_id,
+            record_url=call.record_url,
+            text=text,
+            scoring=scoring,
+            audio_file_id=audio_file_id,
+            audio_content_type="audio/mpeg",
         )
-        fresh = await transcriptions.find_one({"_id": tid})
-        return fresh, ""
+        return doc, ""
     except Exception as exc:
         return None, f"failed:{str(exc)[:200]}"
 
 
 def _skip_reason_to_http(reason: str) -> HTTPException:
     if reason == "no_record":
-        return HTTPException(status_code=400, detail="У звонка нет записи (CALL_RECORD_URL пуст)")
+        return HTTPException(status_code=400, detail="У звонка нет записи")
     if reason == "empty_recording":
         return HTTPException(status_code=502, detail="Пустая запись звонка")
     if reason == "too_large":
-        return HTTPException(status_code=413, detail="Запись звонка слишком большая (>50MB)")
+        return HTTPException(status_code=413, detail="Запись слишком большая (>50MB)")
     if reason.startswith("download_failed:"):
-        return HTTPException(status_code=502, detail=f"Не удалось скачать запись звонка ({reason.split(':', 1)[1]})")
+        return HTTPException(status_code=502, detail=f"Не удалось скачать запись ({reason.split(':', 1)[1]})")
     if reason.startswith("failed:"):
         return HTTPException(status_code=502, detail=f"Анализ не выполнен: {reason.split(':', 1)[1]}")
     return HTTPException(status_code=502, detail=f"Анализ не выполнен: {reason}")
 
 
-@router.post("/calls/{call_id}/analyze", response_model=TranscriptionOut)
-async def analyze_call(
-    call_id: str,
-    user=Depends(get_current_user),
-) -> TranscriptionOut:
-    existing = await transcriptions.find_one({"user_id": user["_id"], "bitrix_call_id": call_id})
+@router.post("/calls/{call_id}/analyze", response_model=AnalysisOut)
+async def analyze_call(call_id: str, user=Depends(get_current_user)) -> AnalysisOut:
+    existing = await analyses.find_one({
+        "user_id": user["_id"], "kind": "call", "call.bitrix_call_id": call_id,
+    })
     if existing and existing.get("status") == "done":
-        return _doc_to_out(existing)
+        return svc.doc_to_out(existing)
 
     data = await _b24("voximplant.statistic.get", {"FILTER": {"ID": call_id}})
     items = data.get("result") or []
@@ -310,24 +313,15 @@ async def analyze_call(
 
     doc, reason = await _ensure_call_analyzed(user, raw, users_map)
     if doc:
-        return _doc_to_out(doc)
+        return svc.doc_to_out(doc)
     raise _skip_reason_to_http(reason)
 
 
-# ============================================================================
-# Open Lines (чаты)
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+# Чаты
+# ═══════════════════════════════════════════════════════════════════════════
 
 CHAT_PROVIDER_TYPES = ("IMOPENLINES_SESSION",)
-
-
-def _parse_b24_date(value: Any) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _normalize_chat(raw: dict[str, Any], users_by_id: dict[str, str]) -> BitrixChat:
@@ -337,10 +331,8 @@ def _normalize_chat(raw: dict[str, Any], users_by_id: dict[str, str]) -> BitrixC
     session_id = str(raw.get("ASSOCIATED_ENTITY_ID") or raw.get("ID") or "")
     operator_id = str(raw.get("RESPONSIBLE_ID") or "")
     channel = str(
-        params.get("LINE_NAME")
-        or params.get("CONNECTOR")
-        or raw.get("PROVIDER_GROUP_ID")
-        or ""
+        params.get("LINE_NAME") or params.get("CONNECTOR")
+        or raw.get("PROVIDER_GROUP_ID") or ""
     )
     client = str(params.get("USER_NAME") or params.get("FROM") or "")
     return BitrixChat(
@@ -350,7 +342,7 @@ def _normalize_chat(raw: dict[str, Any], users_by_id: dict[str, str]) -> BitrixC
         client=client,
         operator=users_by_id.get(operator_id, ""),
         operator_id=operator_id,
-        started_at=_parse_b24_date(raw.get("CREATED") or raw.get("DATE_CREATE")),
+        started_at=_parse_b24_dt(raw.get("CREATED") or raw.get("DATE_CREATE")),
     )
 
 
@@ -362,10 +354,7 @@ async def list_chats(
     date_to: Optional[str] = None,
     user=Depends(get_current_user),
 ) -> BitrixChatsPage:
-    flt: dict[str, Any] = {
-        # "TYPE_ID": 4,
-        # "PROVIDER_TYPE_ID": list(CHAT_PROVIDER_TYPES),
-    }
+    flt: dict[str, Any] = {}
     if date_from:
         flt[">=CREATED"] = date_from
     if date_to:
@@ -374,52 +363,36 @@ async def list_chats(
     start = (page - 1) * page_size
     data = await _b24(
         "crm.activity.list",
-        {
-            "filter": flt,
-            "order": {"CREATED": "DESC"},
-            # "select": [
-            #     "ID",
-            #     "SUBJECT",
-            #     "RESPONSIBLE_ID",
-            #     "CREATED",
-            #     "ASSOCIATED_ENTITY_ID",
-            #     "PROVIDER_PARAMS",
-            #     "PROVIDER_GROUP_ID",
-            #     "PROVIDER_TYPE_ID",
-            #     "DESCRIPTION",
-            # ],
-            "start": start,
-        },
+        {"filter": flt, "order": {"CREATED": "DESC"}, "start": start},
     )
     raw_items = data.get("result", []) or []
     total = int(data.get("total", len(raw_items)))
 
-    user_ids = [str(r.get("RESPONSIBLE_ID") or "") for r in raw_items]
-    users_map = await _fetch_users(user_ids)
-
+    users_map = await _fetch_users([str(r.get("RESPONSIBLE_ID") or "") for r in raw_items])
     items = [_normalize_chat(r, users_map) for r in raw_items][:page_size]
 
     if items:
-        cursor = transcriptions.find(
-            {"user_id": user["_id"], "bitrix_chat_id": {"$in": [c.id for c in items]}},
-            {"_id": 1, "bitrix_chat_id": 1, "status": 1},
+        ids = [c.id for c in items if c.id]
+        cursor = analyses.find(
+            {"user_id": user["_id"], "kind": "chat", "chat.bitrix_chat_id": {"$in": ids}},
+            {"_id": 1, "chat.bitrix_chat_id": 1, "status": 1},
         )
-        analyzed = {doc["bitrix_chat_id"]: doc async for doc in cursor}
+        by_id: dict[str, dict] = {}
+        async for d in cursor:
+            by_id[str((d.get("chat") or {}).get("bitrix_chat_id") or "")] = d
         for c in items:
-            doc = analyzed.get(c.id)
-            if doc:
-                c.transcription_id = str(doc["_id"])
-                c.analyzed = doc.get("status") == "done"
+            d = by_id.get(c.id)
+            if d:
+                c.analysis_id = str(d["_id"])
+                c.analyzed = d.get("status") == "done"
 
     return BitrixChatsPage(items=items, total=total, page=page, page_size=page_size)
 
 
 async def _fetch_chat_history(session_id: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Возвращает (messages, author_names). Падает с понятным сообщением, если webhook не отдаёт историю."""
     try:
         data = await _b24("imopenlines.session.history.get", {"SESSION_ID": session_id, "LIMIT": 500})
     except HTTPException as exc:
-        # имя метода может отличаться у разных вебхуков — пробуем alt-метод
         if exc.status_code == 502 and "imopenlines.session.history" in (exc.detail or ""):
             data = await _b24("imopenlines.session.history", {"SESSION_ID": session_id, "LIMIT": 500})
         else:
@@ -440,12 +413,10 @@ async def _fetch_chat_history(session_id: str) -> tuple[list[dict[str, Any]], di
         uid = str(u.get("id") or u.get("ID") or "")
         if uid:
             authors[uid] = (
-                u.get("name")
-                or u.get("NAME")
+                u.get("name") or u.get("NAME")
                 or " ".join(filter(None, [u.get("first_name"), u.get("last_name")])).strip()
                 or f"#{uid}"
             )
-
     return list(messages), authors
 
 
@@ -468,13 +439,14 @@ def _format_chat(messages: list[dict[str, Any]], authors: dict[str, str], operat
     return "\n".join(lines)
 
 
-@router.post("/chats/{session_id}/analyze", response_model=TranscriptionOut)
-async def analyze_chat(session_id: str, user=Depends(get_current_user)) -> TranscriptionOut:
-    existing = await transcriptions.find_one({"user_id": user["_id"], "bitrix_chat_id": session_id})
+@router.post("/chats/{session_id}/analyze", response_model=AnalysisOut)
+async def analyze_chat(session_id: str, user=Depends(get_current_user)) -> AnalysisOut:
+    existing = await analyses.find_one({
+        "user_id": user["_id"], "kind": "chat", "chat.bitrix_chat_id": session_id,
+    })
     if existing and existing.get("status") == "done":
-        return _doc_to_out(existing)
+        return svc.doc_to_out(existing)
 
-    # Подтянем краткую инфу о сессии через crm.activity для имени канала/оператора
     activity_data = await _b24(
         "crm.activity.list",
         {
@@ -483,14 +455,6 @@ async def analyze_chat(session_id: str, user=Depends(get_current_user)) -> Trans
                 "PROVIDER_TYPE_ID": list(CHAT_PROVIDER_TYPES),
                 "ASSOCIATED_ENTITY_ID": session_id,
             },
-            "select": [
-                "ID",
-                "SUBJECT",
-                "RESPONSIBLE_ID",
-                "CREATED",
-                "ASSOCIATED_ENTITY_ID",
-                "PROVIDER_PARAMS",
-            ],
         },
     )
     act_items = activity_data.get("result") or []
@@ -506,53 +470,31 @@ async def analyze_chat(session_id: str, user=Depends(get_current_user)) -> Trans
     if not text.strip():
         raise HTTPException(status_code=400, detail="В сообщениях нет текста")
 
-    now = datetime.now(timezone.utc)
-    base_doc = {
-        "user_id": user["_id"],
-        "filename": f"bitrix-chat-{session_id}.txt",
-        "source": "bitrix_chat",
-        "bitrix_chat_id": session_id,
-        "bitrix_channel": chat.channel,
-        "bitrix_client": chat.client,
-        "bitrix_manager": chat.operator,
-        "bitrix_manager_id": chat.operator_id,
-        "bitrix_subject": chat.subject,
-        "bitrix_call_date": chat.started_at,
-        "messages_count": len(messages),
-        "status": "processing",
-        "created_at": now,
-        "text": text,
-    }
-    if existing:
-        tid = existing["_id"]
-        await transcriptions.update_one({"_id": tid}, {"$set": base_doc})
-    else:
-        result = await transcriptions.insert_one(base_doc)
-        tid = result.inserted_id
-
     try:
-        sales = await analyze_sales_call(text, source="chat")
-        update = {
-            "sales_analysis": sales.model_dump(),
-            "status": "done",
-            "error": None,
-        }
-    except HTTPException:
-        raise
+        scoring = await analyze_unit(text, source="chat")
     except Exception as exc:
-        await transcriptions.update_one(
-            {"_id": tid}, {"$set": {"status": "failed", "error": str(exc)[:500]}}
-        )
         raise HTTPException(status_code=502, detail=f"Анализ не выполнен: {exc}")
 
-    await transcriptions.update_one({"_id": tid}, {"$set": update})
-    fresh = await transcriptions.find_one({"_id": tid})
-    return _doc_to_out(fresh)
+    doc = await svc.upsert_chat(
+        user_id=user["_id"],
+        bitrix_chat_id=session_id,
+        title=f"chat-{session_id}",
+        date=chat.started_at,
+        channel=chat.channel,
+        client=chat.client,
+        subject=chat.subject,
+        manager=chat.operator,
+        manager_id=chat.operator_id,
+        messages_count=len(messages),
+        text=text,
+        scoring=scoring,
+    )
+    return svc.doc_to_out(doc)
 
 
-# ============================================================================
-# Leads (CRM)
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+# Лиды — справочники
+# ═══════════════════════════════════════════════════════════════════════════
 
 LEAD_PAGE_SIZE_MAX = 20
 
@@ -564,14 +506,12 @@ async def _fetch_status_list(entity_id: str) -> list[BitrixLeadStatus]:
     for r in rows:
         if not isinstance(r, dict):
             continue
-        items.append(
-            BitrixLeadStatus(
-                status_id=str(r.get("STATUS_ID") or r.get("ID") or ""),
-                name=str(r.get("NAME") or "").strip() or str(r.get("STATUS_ID") or ""),
-                sort=int(r.get("SORT") or 0),
-                color=str(r.get("COLOR") or ""),
-            )
-        )
+        items.append(BitrixLeadStatus(
+            status_id=str(r.get("STATUS_ID") or r.get("ID") or ""),
+            name=str(r.get("NAME") or "").strip() or str(r.get("STATUS_ID") or ""),
+            sort=int(r.get("SORT") or 0),
+            color=str(r.get("COLOR") or ""),
+        ))
     items.sort(key=lambda s: (s.sort, s.name))
     return items
 
@@ -594,25 +534,19 @@ async def list_lead_sources(user=Depends(get_current_user)) -> list[BitrixLeadSt
     return await _fetch_lead_sources()
 
 
-def _to_b24_iso(value: Optional[str], end_of_day: bool = False) -> Optional[str]:
-    if not value:
-        return None
-    raw = value.strip()
-    if not raw:
-        return None
-    # Принимаем как полную ISO-дату, так и YYYY-MM-DD
-    if "T" in raw:
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
-        except ValueError:
-            return None
-    try:
-        dt = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if end_of_day:
-        dt = dt.replace(hour=23, minute=59, second=59)
-    return dt.isoformat()
+# ═══════════════════════════════════════════════════════════════════════════
+# Лиды — список
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _first_value(value: Any) -> str:
+    if isinstance(value, list) and value:
+        head = value[0]
+        if isinstance(head, dict):
+            return str(head.get("VALUE") or "").strip()
+        return str(head).strip()
+    if isinstance(value, str):
+        return value.strip()
+    return ""
 
 
 @router.get("/leads", response_model=BitrixLeadsPage)
@@ -634,16 +568,13 @@ async def list_leads(
         filt["SOURCE_ID"] = source_id
     if assigned_by_id:
         filt["ASSIGNED_BY_ID"] = assigned_by_id
-
     df = _to_b24_iso(date_from)
     dt = _to_b24_iso(date_to, end_of_day=True)
     if df:
         filt[">=DATE_CREATE"] = df
     if dt:
         filt["<=DATE_CREATE"] = dt
-
     if search:
-        # Битрикс позволяет подстрочный поиск по полю через префикс `%`
         filt["%TITLE"] = search.strip()
 
     start = (page - 1) * page_size
@@ -653,20 +584,9 @@ async def list_leads(
             "filter": filt,
             "order": {"DATE_CREATE": "DESC"},
             "select": [
-                "ID",
-                "TITLE",
-                "NAME",
-                "LAST_NAME",
-                "SECOND_NAME",
-                "STATUS_ID",
-                "SOURCE_ID",
-                "OPPORTUNITY",
-                "CURRENCY_ID",
-                "PHONE",
-                "EMAIL",
-                "ASSIGNED_BY_ID",
-                "DATE_CREATE",
-                "DATE_MODIFY",
+                "ID", "TITLE", "NAME", "LAST_NAME", "SECOND_NAME",
+                "STATUS_ID", "SOURCE_ID", "OPPORTUNITY", "CURRENCY_ID",
+                "PHONE", "EMAIL", "ASSIGNED_BY_ID", "DATE_CREATE", "DATE_MODIFY",
             ],
             "start": start,
         },
@@ -676,90 +596,60 @@ async def list_leads(
 
     statuses = {s.status_id: s.name for s in await _fetch_lead_statuses()}
     sources = {s.status_id: s.name for s in await _fetch_lead_sources()}
-
-    user_ids = [str(r.get("ASSIGNED_BY_ID") or "") for r in raw_items]
-    users_map = await _fetch_users(user_ids)
-
-    def _first_value(value: Any) -> str:
-        if isinstance(value, list) and value:
-            head = value[0]
-            if isinstance(head, dict):
-                return str(head.get("VALUE") or "").strip()
-            return str(head).strip()
-        if isinstance(value, str):
-            return value.strip()
-        return ""
+    users_map = await _fetch_users([str(r.get("ASSIGNED_BY_ID") or "") for r in raw_items])
 
     items: list[BitrixLead] = []
     for r in raw_items:
-        created: Optional[datetime] = None
-        raw_date = r.get("DATE_CREATE")
-        if raw_date:
-            try:
-                created = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
-            except ValueError:
-                created = None
-        modified: Optional[datetime] = None
-        raw_mod = r.get("DATE_MODIFY")
-        if raw_mod:
-            try:
-                modified = datetime.fromisoformat(str(raw_mod).replace("Z", "+00:00"))
-            except ValueError:
-                modified = None
         sid = str(r.get("STATUS_ID") or "")
         src_id = str(r.get("SOURCE_ID") or "")
         uid = str(r.get("ASSIGNED_BY_ID") or "")
-        items.append(
-            BitrixLead(
-                id=str(r.get("ID") or ""),
-                title=str(r.get("TITLE") or "").strip(),
-                name=str(r.get("NAME") or "").strip(),
-                last_name=str(r.get("LAST_NAME") or "").strip(),
-                second_name=str(r.get("SECOND_NAME") or "").strip(),
-                status_id=sid,
-                status_name=statuses.get(sid, sid),
-                source_id=src_id,
-                source_name=sources.get(src_id, src_id),
-                opportunity=float(r.get("OPPORTUNITY") or 0) if r.get("OPPORTUNITY") not in (None, "") else 0.0,
-                currency_id=str(r.get("CURRENCY_ID") or "").strip(),
-                phone=_first_value(r.get("PHONE")),
-                email=_first_value(r.get("EMAIL")),
-                assigned_by_id=uid,
-                assigned_by=users_map.get(uid, ""),
-                created_at=created,
-                modified_at=modified,
-            )
-        )
+        items.append(BitrixLead(
+            id=str(r.get("ID") or ""),
+            title=str(r.get("TITLE") or "").strip(),
+            name=str(r.get("NAME") or "").strip(),
+            last_name=str(r.get("LAST_NAME") or "").strip(),
+            second_name=str(r.get("SECOND_NAME") or "").strip(),
+            status_id=sid,
+            status_name=statuses.get(sid, sid),
+            source_id=src_id,
+            source_name=sources.get(src_id, src_id),
+            opportunity=float(r.get("OPPORTUNITY") or 0) if r.get("OPPORTUNITY") not in (None, "") else 0.0,
+            currency_id=str(r.get("CURRENCY_ID") or "").strip(),
+            phone=_first_value(r.get("PHONE")),
+            email=_first_value(r.get("EMAIL")),
+            assigned_by_id=uid,
+            assigned_by=users_map.get(uid, ""),
+            created_at=_parse_b24_dt(r.get("DATE_CREATE")),
+            modified_at=_parse_b24_dt(r.get("DATE_MODIFY")),
+        ))
 
     if items:
         ids = [l.id for l in items if l.id]
-        cursor = lead_analyses.find(
-            {"user_id": user["_id"], "lead_id": {"$in": ids}},
-            {"lead_id": 1, "status": 1, "risk": 1, "sales_analysis.meta.total_score": 1},
+        cursor = analyses.find(
+            {"user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": {"$in": ids}},
+            {
+                "_id": 1, "lead.bitrix_lead_id": 1, "lead.risk": 1,
+                "status": 1, "scoring.meta.normalized_score": 1,
+            },
         )
-        analyses_map: dict[str, dict[str, Any]] = {}
-        async for doc in cursor:
-            analyses_map[str(doc.get("lead_id") or "")] = doc
+        by_lead: dict[str, dict] = {}
+        async for d in cursor:
+            by_lead[str((d.get("lead") or {}).get("bitrix_lead_id") or "")] = d
         for l in items:
-            adoc = analyses_map.get(l.id)
-            if not adoc:
+            d = by_lead.get(l.id)
+            if not d:
                 continue
-            l.analysis_status = str(adoc.get("status") or "")
-            l.analysis_risk = str(adoc.get("risk") or "")
-            meta = (adoc.get("sales_analysis") or {}).get("meta") or {}
-            l.analysis_score = int(meta.get("total_score") or 0)
+            l.analysis_id = str(d["_id"])
+            l.analysis_status = str(d.get("status") or "")
+            l.analysis_risk = str((d.get("lead") or {}).get("risk") or "")
+            l.analysis_score = int(((d.get("scoring") or {}).get("meta") or {}).get("normalized_score") or 0)
 
     return BitrixLeadsPage(items=items, total=total, page=page, page_size=page_size)
 
 
-def _parse_b24_dt(value: Any) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
+# ═══════════════════════════════════════════════════════════════════════════
+# Лиды — детали и таймлайн
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _multi_field(value: Any) -> list[BitrixContactValue]:
     if not isinstance(value, list):
@@ -787,11 +677,9 @@ async def get_lead(lead_id: str, user=Depends(get_current_user)) -> BitrixLeadDe
         raise HTTPException(status_code=404, detail="Лид не найден")
 
     statuses = {s.status_id: s.name for s in await _fetch_lead_statuses()}
-
     assigned_id = str(raw.get("ASSIGNED_BY_ID") or "")
     created_by_id = str(raw.get("CREATED_BY_ID") or "")
     users_map = await _fetch_users([assigned_id, created_by_id])
-
     sid = str(raw.get("STATUS_ID") or "")
 
     return BitrixLeadDetail(
@@ -828,13 +716,7 @@ async def get_lead(lead_id: str, user=Depends(get_current_user)) -> BitrixLeadDe
     )
 
 
-_ACTIVITY_TYPE_MAP = {
-    1: "meeting",
-    2: "call",
-    3: "task",
-    4: "email",
-    6: "activity",
-}
+_ACTIVITY_TYPE_MAP = {1: "meeting", 2: "call", 3: "task", 4: "email", 6: "activity"}
 
 
 @router.get("/leads/{lead_id}/activity", response_model=BitrixLeadActivity)
@@ -851,69 +733,47 @@ async def get_lead_activity(
     dt = _to_b24_iso(date_to, end_of_day=True)
 
     activity_filter: dict[str, Any] = {"OWNER_TYPE_ID": 1, "OWNER_ID": int(lead_id)}
-    if df:
-        activity_filter[">=CREATED"] = df
-    if dt:
-        activity_filter["<=CREATED"] = dt
-
     comment_filter: dict[str, Any] = {"ENTITY_ID": int(lead_id), "ENTITY_TYPE": "lead"}
-    if df:
-        comment_filter[">=CREATED"] = df
-    if dt:
-        comment_filter["<=CREATED"] = dt
-
     call_filter: dict[str, Any] = {"CRM_ENTITY_TYPE": "LEAD", "CRM_ENTITY_ID": lead_id}
     if df:
+        activity_filter[">=CREATED"] = df
+        comment_filter[">=CREATED"] = df
         call_filter[">=CALL_START_DATE"] = df
     if dt:
+        activity_filter["<=CREATED"] = dt
+        comment_filter["<=CREATED"] = dt
         call_filter["<=CALL_START_DATE"] = dt
 
-    # Активности (звонки, письма, встречи, задачи)
     try:
-        act_data = await _b24(
-            "crm.activity.list",
-            {
-                "filter": activity_filter,
-                "order": {"CREATED": "DESC"},
-                "select": [
-                    "ID", "TYPE_ID", "SUBJECT", "DESCRIPTION",
-                    "COMPLETED", "RESPONSIBLE_ID", "CREATED",
-                    "START_TIME", "END_TIME", "DIRECTION",
-                ],
-            },
-        )
+        act_data = await _b24("crm.activity.list", {
+            "filter": activity_filter,
+            "order": {"CREATED": "DESC"},
+            "select": [
+                "ID", "TYPE_ID", "SUBJECT", "DESCRIPTION",
+                "COMPLETED", "RESPONSIBLE_ID", "CREATED",
+                "START_TIME", "END_TIME", "DIRECTION",
+            ],
+        })
         activities = act_data.get("result") or []
     except HTTPException:
         activities = []
 
-    # Комментарии таймлайна
     try:
-        com_data = await _b24(
-            "crm.timeline.comment.list",
-            {
-                "filter": comment_filter,
-                "order": {"CREATED": "DESC"},
-            },
-        )
+        com_data = await _b24("crm.timeline.comment.list", {
+            "filter": comment_filter, "order": {"CREATED": "DESC"},
+        })
         comments = com_data.get("result") or []
     except HTTPException:
         comments = []
 
-    # Звонки через voximplant (если интеграция включена)
     try:
-        call_data = await _b24(
-            "voximplant.statistic.get",
-            {
-                "FILTER": call_filter,
-                "SORT": "CALL_START_DATE",
-                "ORDER": "DESC",
-            },
-        )
+        call_data = await _b24("voximplant.statistic.get", {
+            "FILTER": call_filter, "SORT": "CALL_START_DATE", "ORDER": "DESC",
+        })
         call_rows = call_data.get("result") or []
     except HTTPException:
         call_rows = []
 
-    # Собираем уникальные id ответственных/авторов
     user_ids: list[str] = []
     for a in activities:
         if isinstance(a, dict):
@@ -927,129 +787,69 @@ async def get_lead_activity(
     users_map = await _fetch_users(user_ids)
 
     timeline: list[BitrixLeadTimelineEntry] = []
-
     for a in activities:
         if not isinstance(a, dict):
             continue
-        # Звонки показываем в отдельной секции, в таймлайне их не дублируем.
         try:
             type_id = int(a.get("TYPE_ID") or 0)
         except (TypeError, ValueError):
             type_id = 0
-        if type_id == 2:
+        if type_id == 2:  # звонки идут в отдельную секцию
             continue
-        activity_type = _ACTIVITY_TYPE_MAP.get(type_id, "activity")
-        responsible = str(a.get("RESPONSIBLE_ID") or "")
-        timeline.append(
-            BitrixLeadTimelineEntry(
-                id=str(a.get("ID") or ""),
-                kind="activity",
-                activity_type=activity_type,
-                subject=str(a.get("SUBJECT") or "").strip(),
-                text=str(a.get("DESCRIPTION") or "").strip(),
-                author_id=responsible,
-                author=users_map.get(responsible, ""),
-                completed=str(a.get("COMPLETED") or "N").upper() == "Y",
-                direction=str(a.get("DIRECTION") or ""),
-                date=_parse_b24_dt(a.get("CREATED") or a.get("START_TIME")),
-            )
-        )
-
+        timeline.append(BitrixLeadTimelineEntry(
+            id=str(a.get("ID") or ""),
+            kind="activity",
+            activity_type=_ACTIVITY_TYPE_MAP.get(type_id, "activity"),
+            subject=str(a.get("SUBJECT") or "").strip(),
+            text=str(a.get("DESCRIPTION") or "").strip(),
+            author_id=str(a.get("RESPONSIBLE_ID") or ""),
+            author=users_map.get(str(a.get("RESPONSIBLE_ID") or ""), ""),
+            completed=str(a.get("COMPLETED") or "N").upper() == "Y",
+            direction=str(a.get("DIRECTION") or ""),
+            date=_parse_b24_dt(a.get("CREATED") or a.get("START_TIME")),
+        ))
     for c in comments:
         if not isinstance(c, dict):
             continue
         author_id = str(c.get("AUTHOR_ID") or "")
-        timeline.append(
-            BitrixLeadTimelineEntry(
-                id=str(c.get("ID") or ""),
-                kind="comment",
-                activity_type="",
-                subject="",
-                text=str(c.get("COMMENT") or "").strip(),
-                author_id=author_id,
-                author=users_map.get(author_id, ""),
-                completed=True,
-                direction="",
-                date=_parse_b24_dt(c.get("CREATED")),
-            )
-        )
-
+        timeline.append(BitrixLeadTimelineEntry(
+            id=str(c.get("ID") or ""),
+            kind="comment",
+            text=str(c.get("COMMENT") or "").strip(),
+            author_id=author_id,
+            author=users_map.get(author_id, ""),
+            completed=True,
+            date=_parse_b24_dt(c.get("CREATED")),
+        ))
     timeline.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     calls = [_normalize_call(r, users_map) for r in call_rows if isinstance(r, dict)]
-
-    if calls:
-        cursor = transcriptions.find(
-            {"user_id": user["_id"], "bitrix_call_id": {"$in": [c.id for c in calls]}},
-            {"_id": 1, "bitrix_call_id": 1, "status": 1},
-        )
-        analyzed = {doc["bitrix_call_id"]: doc async for doc in cursor}
-        for c in calls:
-            doc = analyzed.get(c.id)
-            if doc:
-                c.transcription_id = str(doc["_id"])
-                c.analyzed = doc.get("status") == "done"
+    await _enrich_calls_with_analysis(user, calls)
 
     return BitrixLeadActivity(timeline=timeline, calls=calls)
 
 
-# ============================================================================
-# Lead-level аналитика (map-reduce: per-call sales_analysis → общий отчёт по лиду)
-# ============================================================================
-
-
-def _lead_analysis_doc_to_out(doc: dict[str, Any]) -> LeadAnalysisOut:
-    calls = []
-    for c in (doc.get("calls") or []):
-        if not isinstance(c, dict):
-            continue
-        try:
-            calls.append(LeadAnalysisCallRef(**c))
-        except Exception:
-            continue
-    return LeadAnalysisOut(
-        lead_id=str(doc.get("lead_id") or ""),
-        status=str(doc.get("status") or "done"),
-        summary=str(doc.get("summary") or ""),
-        client_request=str(doc.get("client_request") or ""),
-        objections=list(doc.get("objections") or []),
-        manager_pros=list(doc.get("manager_pros") or []),
-        manager_cons=list(doc.get("manager_cons") or []),
-        risk=str(doc.get("risk") or "low"),
-        risk_reason=str(doc.get("risk_reason") or ""),
-        next_step=str(doc.get("next_step") or ""),
-        sales_analysis=doc.get("sales_analysis"),
-        calls_count=int(doc.get("calls_count") or 0),
-        comments_count=int(doc.get("comments_count") or 0),
-        calls=calls,
-        error=str(doc.get("error") or ""),
-        created_at=doc.get("created_at"),
-        updated_at=doc.get("updated_at"),
-        input_hash=str(doc.get("input_hash") or ""),
-    )
-
+# ═══════════════════════════════════════════════════════════════════════════
+# Лиды — анализ (map-reduce)
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _fmt_b24_dt(value: Any, fmt: str = "%d.%m.%Y %H:%M") -> str:
     dt = _parse_b24_dt(value)
     return dt.strftime(fmt) if dt else "—"
 
 
-def _build_lead_reduce_input(
+def _build_reduce_input(
     raw_lead: dict[str, Any],
     statuses_map: dict[str, str],
     sources_map: dict[str, str],
-    call_refs: list[LeadAnalysisCallRef],
-    call_docs: list[Optional[dict[str, Any]]],
+    call_refs: list[LeadCallRef],
+    call_docs: list[Optional[dict]],
     comments: list[dict[str, Any]],
 ) -> str:
     sid = str(raw_lead.get("STATUS_ID") or "")
     src_id = str(raw_lead.get("SOURCE_ID") or "")
-
-    days_old = ""
     created = _parse_b24_dt(raw_lead.get("DATE_CREATE"))
-    if created:
-        days = (datetime.now(timezone.utc) - created).days
-        days_old = f"{days} дн."
+    days_old = f"{(datetime.now(timezone.utc) - created).days} дн." if created else ""
 
     meta_lines = [
         "ЛИД:",
@@ -1059,9 +859,7 @@ def _build_lead_reduce_input(
         f"  Источник: {sources_map.get(src_id, src_id) or '—'}",
     ]
     if raw_lead.get("OPPORTUNITY"):
-        meta_lines.append(
-            f"  Сумма: {raw_lead.get('OPPORTUNITY')} {raw_lead.get('CURRENCY_ID') or ''}".rstrip()
-        )
+        meta_lines.append(f"  Сумма: {raw_lead.get('OPPORTUNITY')} {raw_lead.get('CURRENCY_ID') or ''}".rstrip())
     if days_old:
         meta_lines.append(f"  Возраст лида: {days_old}")
     card_comment = (raw_lead.get("COMMENTS") or "").strip() if isinstance(raw_lead.get("COMMENTS"), str) else ""
@@ -1069,45 +867,37 @@ def _build_lead_reduce_input(
         meta_lines.append(f"  Комментарий в карточке: {card_comment[:600]}")
 
     parts: list[str] = ["\n".join(meta_lines), ""]
+    analyzed = [(r, d) for r, d in zip(call_refs, call_docs) if r.analyzed and d]
+    skipped = [r for r in call_refs if not r.analyzed]
 
-    analyzed_refs = [(r, d) for r, d in zip(call_refs, call_docs) if r.analyzed and d]
-    skipped_refs = [r for r in call_refs if not r.analyzed]
-
-    if analyzed_refs:
-        parts.append(
-            f"ЗВОНКИ ({len(call_refs)} шт, проанализировано {len(analyzed_refs)} из {len(call_refs)}):"
-        )
-        for r, d in analyzed_refs[:12]:
-            sa = (d or {}).get("sales_analysis") or {}
-            meta = sa.get("meta") or {}
-            analysis = sa.get("analysis") or {}
-            strengths = [str(s).strip() for s in (analysis.get("strengths") or []) if str(s).strip()]
-            weaknesses = [str(s).strip() for s in (analysis.get("weaknesses") or []) if str(s).strip()]
-            verdict = str(meta.get("system_verdict") or "").strip()
-            snippet = ((d or {}).get("text") or "")[:600].strip()
+    if analyzed:
+        parts.append(f"ЗВОНКИ ({len(call_refs)} шт, проанализировано {len(analyzed)} из {len(call_refs)}):")
+        for r, d in analyzed[:12]:
+            scoring = (d or {}).get("scoring") or {}
+            meta = scoring.get("meta") or {}
+            strengths = [str(s).strip() for s in (scoring.get("strengths") or []) if str(s).strip()]
+            weaknesses = [str(s).strip() for s in (scoring.get("weaknesses") or []) if str(s).strip()]
+            verdict = str(meta.get("verdict") or "").strip()
+            snippet = ((d or {}).get("source_text") or "")[:600].strip()
             dt_label = r.date.strftime("%d.%m.%Y %H:%M") if r.date else "—"
 
-            block = [
-                f"[Звонок {r.call_id}] {dt_label} · {r.direction or '—'} · {r.duration}с · оценка {r.score} ({r.grade or '—'})",
-            ]
+            block = [f"[Звонок {r.call_id}] {dt_label} · {r.direction or '—'} · {r.duration}с · оценка {r.normalized_score}/100 ({r.grade or '—'})"]
             if verdict:
                 block.append(f"  Резюме: {verdict}")
             if strengths:
-                block.append("  Плюсы менеджера: " + "; ".join(strengths))
+                block.append("  Плюсы: " + "; ".join(strengths))
             if weaknesses:
-                block.append("  Минусы менеджера: " + "; ".join(weaknesses))
+                block.append("  Минусы: " + "; ".join(weaknesses))
             if snippet:
                 block.append(f"  Начало транскрипта: {snippet}")
             parts.append("\n".join(block))
-        if skipped_refs:
-            parts.append(
-                f"(Пропущено звонков: {len(skipped_refs)} — без записи или с ошибкой анализа)"
-            )
+        if skipped:
+            parts.append(f"(Пропущено: {len(skipped)} — без записи или с ошибкой анализа)")
         parts.append("")
     else:
         parts.append("ЗВОНКОВ С УСПЕШНЫМ АНАЛИЗОМ НЕТ.")
         if call_refs:
-            parts.append(f"(Всего звонков по лиду: {len(call_refs)}, у всех нет записи или анализ не прошёл)")
+            parts.append(f"(Всего звонков: {len(call_refs)}, у всех нет записи или анализ не прошёл)")
         parts.append("")
 
     if comments:
@@ -1117,7 +907,6 @@ def _build_lead_reduce_input(
             text = str(c.get("COMMENT") or "").strip().replace("\n", " ")[:500]
             if text:
                 parts.append(f"  [{dt_label}] {text}")
-
     return "\n".join(parts)
 
 
@@ -1129,15 +918,10 @@ async def _run_lead_analysis_bg(
     comments: list[dict[str, Any]],
     force: bool,
 ) -> None:
-    """Фоновая корутина: считает hash, проверяет кэш, дотранскрибирует звонки,
-    зовёт reduce, сохраняет финальный результат в lead_analyses. Любые исключения
-    переводят документ в status=failed с error-сообщением."""
+    """Фон: дотранскрибируем звонки, делаем reduce, сохраняем в analyses kind=lead."""
     try:
         call_ids_sorted = sorted([str(r.get("ID") or "") for r in raw_calls if r.get("ID")])
-        last_comment_id = max(
-            (str(c.get("ID") or "") for c in comments if c.get("ID")),
-            default="",
-        )
+        last_comment_id = max((str(c.get("ID") or "") for c in comments if c.get("ID")), default="")
         hasher = hashlib.sha256()
         hasher.update("|".join(call_ids_sorted).encode())
         hasher.update(b"::")
@@ -1148,32 +932,28 @@ async def _run_lead_analysis_bg(
         hasher.update(str(raw_lead.get("DATE_MODIFY") or "").encode())
         input_hash = hasher.hexdigest()[:16]
 
-        cached = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
-        # Если hash совпал и есть свежий done — просто отметим, что обновлений нет.
-        if (
-            cached
-            and not force
-            and cached.get("input_hash") == input_hash
-            and cached.get("status") == "done"
-            and cached.get("sales_analysis")
-        ):
-            await lead_analyses.update_one(
-                {"user_id": user["_id"], "lead_id": lead_id},
+        existing = await analyses.find_one({
+            "user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": lead_id,
+        })
+        if (existing and not force
+                and (existing.get("lead") or {}).get("input_hash") == input_hash
+                and existing.get("status") == "done"):
+            await analyses.update_one(
+                {"_id": existing["_id"]},
                 {"$set": {"status": "done", "updated_at": datetime.now(timezone.utc), "error": ""}},
             )
             return
 
-        user_ids = [str(r.get("PORTAL_USER_ID") or "") for r in raw_calls]
-        users_map = await _fetch_users(user_ids)
+        users_map = await _fetch_users([str(r.get("PORTAL_USER_ID") or "") for r in raw_calls])
 
-        call_refs: list[LeadAnalysisCallRef] = []
-        call_docs: list[Optional[dict[str, Any]]] = []
+        call_refs: list[LeadCallRef] = []
+        call_docs: list[Optional[dict]] = []
         for raw in raw_calls:
             call = _normalize_call(raw, users_map)
             doc, reason = await _ensure_call_analyzed(user, raw, users_map)
-            ref = LeadAnalysisCallRef(
+            ref = LeadCallRef(
+                analysis_id=str(doc["_id"]) if doc else "",
                 call_id=call.id,
-                transcription_id=str(doc["_id"]) if doc else "",
                 date=call.date,
                 direction=call.direction,
                 duration=call.duration,
@@ -1181,59 +961,53 @@ async def _run_lead_analysis_bg(
                 skipped_reason="" if doc else reason,
             )
             if doc:
-                meta = (doc.get("sales_analysis") or {}).get("meta") or {}
-                ref.score = int(meta.get("total_score") or 0)
+                meta = (doc.get("scoring") or {}).get("meta") or {}
+                ref.normalized_score = int(meta.get("normalized_score") or 0)
                 ref.grade = str(meta.get("grade") or "")
             call_refs.append(ref)
             call_docs.append(doc)
 
         statuses_map = {s.status_id: s.name for s in await _fetch_lead_statuses()}
         sources_map = {s.status_id: s.name for s in await _fetch_lead_sources()}
+        reduce_input = _build_reduce_input(raw_lead, statuses_map, sources_map, call_refs, call_docs, comments)
 
-        reduce_input = _build_lead_reduce_input(
-            raw_lead, statuses_map, sources_map, call_refs, call_docs, comments,
-        )
-        result = await analyze_lead_overall(reduce_input)
+        scoring, qualitative = await analyze_lead_aggregate(reduce_input)
 
-        now = datetime.now(timezone.utc)
-        doc_set = {
-            "user_id": user["_id"],
-            "lead_id": lead_id,
-            "status": "done",
-            "input_hash": input_hash,
-            "summary": result["summary"],
-            "client_request": result["client_request"],
-            "objections": result["objections"],
-            "manager_pros": result["manager_pros"],
-            "manager_cons": result["manager_cons"],
-            "risk": result["risk"],
-            "risk_reason": result["risk_reason"],
-            "next_step": result["next_step"],
-            "sales_analysis": result.get("sales_analysis"),
-            "calls_count": len(call_refs),
-            "comments_count": len(comments),
-            "calls": [r.model_dump() for r in call_refs],
-            "error": "",
-            "updated_at": now,
-        }
-        await lead_analyses.update_one(
-            {"user_id": user["_id"], "lead_id": lead_id},
-            {"$set": doc_set, "$setOnInsert": {"created_at": now}},
-            upsert=True,
+        assigned_id = str(raw_lead.get("ASSIGNED_BY_ID") or "")
+        manager_map = await _fetch_users([assigned_id])
+        await svc.upsert_lead(
+            user_id=user["_id"],
+            bitrix_lead_id=lead_id,
+            title=str(raw_lead.get("TITLE") or "").strip() or f"Лид #{lead_id}",
+            date=_parse_b24_dt(raw_lead.get("DATE_CREATE")),
+            manager=manager_map.get(assigned_id, ""),
+            manager_id=assigned_id,
+            status_id=str(raw_lead.get("STATUS_ID") or ""),
+            status_name=statuses_map.get(str(raw_lead.get("STATUS_ID") or ""), ""),
+            source_id=str(raw_lead.get("SOURCE_ID") or ""),
+            source_name=sources_map.get(str(raw_lead.get("SOURCE_ID") or ""), ""),
+            opportunity=float(raw_lead.get("OPPORTUNITY") or 0) if raw_lead.get("OPPORTUNITY") not in (None, "") else 0.0,
+            currency=str(raw_lead.get("CURRENCY_ID") or ""),
+            bitrix_url=_lead_portal_url(lead_id),
+            scoring=scoring,
+            qualitative=qualitative,
+            call_refs=call_refs,
+            comments_count=len(comments),
+            input_hash=input_hash,
+            source_text=reduce_input,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Фоновый анализ лида %s упал", lead_id)
-        await lead_analyses.update_one(
-            {"user_id": user["_id"], "lead_id": lead_id},
+        await analyses.update_one(
+            {"user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": lead_id},
             {
                 "$set": {
-                    "status": "failed",
-                    "error": str(exc)[:500],
+                    "status": "failed", "error": str(exc)[:500],
                     "updated_at": datetime.now(timezone.utc),
                 },
                 "$setOnInsert": {
-                    "user_id": user["_id"],
-                    "lead_id": lead_id,
+                    "user_id": user["_id"], "kind": "lead",
+                    "lead": {"bitrix_lead_id": lead_id},
                     "created_at": datetime.now(timezone.utc),
                 },
             },
@@ -1241,86 +1015,82 @@ async def _run_lead_analysis_bg(
         )
 
 
-@router.post("/leads/{lead_id}/analyze", response_model=LeadAnalysisOut)
+@router.post("/leads/{lead_id}/analyze", response_model=AnalysisOut)
 async def analyze_lead(
     lead_id: str,
     force: bool = Query(False, description="Игнорировать кэш и пересчитать"),
     user=Depends(get_current_user),
-) -> LeadAnalysisOut:
-    """Запускает анализ лида в фоне и сразу возвращает текущее состояние документа.
-    Фронт может либо опросить GET /leads/{id}/analysis, либо подождать notification."""
+) -> AnalysisOut:
     if not lead_id.strip().isdigit():
         raise HTTPException(status_code=400, detail="Некорректный ID лида")
 
-    existing = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
+    existing = await analyses.find_one({
+        "user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": lead_id,
+    })
     if existing and existing.get("status") == "processing":
-        # Не плодим параллельные таски — пользователь увидит текущий статус.
-        return _lead_analysis_doc_to_out(existing)
+        return svc.doc_to_out(existing)
 
-    # Быстрая валидация — успеваем за пару b24-запросов, дальше уходим в фон.
     lead_data = await _b24("crm.lead.get", {"id": lead_id})
     raw_lead = lead_data.get("result")
     if not raw_lead:
         raise HTTPException(status_code=404, detail="Лид не найден")
 
-    call_data = await _b24(
-        "voximplant.statistic.get",
-        {
-            "FILTER": {"CRM_ENTITY_TYPE": "LEAD", "CRM_ENTITY_ID": lead_id},
-            "SORT": "CALL_START_DATE",
-            "ORDER": "ASC",
-        },
-    )
+    call_data = await _b24("voximplant.statistic.get", {
+        "FILTER": {"CRM_ENTITY_TYPE": "LEAD", "CRM_ENTITY_ID": lead_id},
+        "SORT": "CALL_START_DATE", "ORDER": "ASC",
+    })
     raw_calls = [r for r in (call_data.get("result") or []) if isinstance(r, dict)]
 
     try:
-        com_data = await _b24(
-            "crm.timeline.comment.list",
-            {
-                "filter": {"ENTITY_ID": int(lead_id), "ENTITY_TYPE": "lead"},
-                "order": {"CREATED": "ASC"},
-            },
-        )
+        com_data = await _b24("crm.timeline.comment.list", {
+            "filter": {"ENTITY_ID": int(lead_id), "ENTITY_TYPE": "lead"},
+            "order": {"CREATED": "ASC"},
+        })
         comments = [c for c in (com_data.get("result") or []) if isinstance(c, dict)]
     except HTTPException:
         comments = []
 
     if not raw_calls and not comments:
-        raise HTTPException(
-            status_code=400,
-            detail="По лиду нет звонков и комментариев — нечего анализировать.",
-        )
+        raise HTTPException(status_code=400, detail="По лиду нет звонков и комментариев — нечего анализировать.")
 
     now = datetime.now(timezone.utc)
-    await lead_analyses.update_one(
-        {"user_id": user["_id"], "lead_id": lead_id},
+    statuses_map = {s.status_id: s.name for s in await _fetch_lead_statuses()}
+    await analyses.update_one(
+        {"user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": lead_id},
         {
-            "$set": {"status": "processing", "updated_at": now, "error": ""},
+            "$set": {
+                "status": "processing",
+                "title": str(raw_lead.get("TITLE") or "").strip() or f"Лид #{lead_id}",
+                "date": _parse_b24_dt(raw_lead.get("DATE_CREATE")),
+                "updated_at": now,
+                "error": "",
+                "lead.bitrix_lead_id": lead_id,
+                "lead.status_id": str(raw_lead.get("STATUS_ID") or ""),
+                "lead.status_name": statuses_map.get(str(raw_lead.get("STATUS_ID") or ""), ""),
+                "lead.bitrix_url": _lead_portal_url(lead_id),
+            },
             "$setOnInsert": {
-                "user_id": user["_id"],
-                "lead_id": lead_id,
-                "created_at": now,
+                "user_id": user["_id"], "kind": "lead", "created_at": now,
             },
         },
         upsert=True,
     )
 
-    asyncio.create_task(
-        _run_lead_analysis_bg(user, lead_id, raw_lead, raw_calls, comments, force)
-    )
+    asyncio.create_task(_run_lead_analysis_bg(user, lead_id, raw_lead, raw_calls, comments, force))
 
-    fresh = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
-    return _lead_analysis_doc_to_out(fresh)
+    fresh = await analyses.find_one({
+        "user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": lead_id,
+    })
+    return svc.doc_to_out(fresh)
 
 
-@router.get("/leads/{lead_id}/analysis", response_model=LeadAnalysisOut)
-async def get_lead_analysis(
-    lead_id: str,
-    user=Depends(get_current_user),
-) -> LeadAnalysisOut:
+@router.get("/leads/{lead_id}/analysis", response_model=AnalysisOut)
+async def get_lead_analysis(lead_id: str, user=Depends(get_current_user)) -> AnalysisOut:
     if not lead_id.strip().isdigit():
         raise HTTPException(status_code=400, detail="Некорректный ID лида")
-    doc = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
+    doc = await analyses.find_one({
+        "user_id": user["_id"], "kind": "lead", "lead.bitrix_lead_id": lead_id,
+    })
     if not doc:
         raise HTTPException(status_code=404, detail="Анализ ещё не выполнен")
-    return _lead_analysis_doc_to_out(doc)
+    return svc.doc_to_out(doc)

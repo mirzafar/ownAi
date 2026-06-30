@@ -54,7 +54,7 @@ async function upload() {
   const form = new FormData()
   form.append('file', file.value)
   try {
-    const { data } = await api.post('/transcriptions', form, {
+    const { data } = await api.post('/analyses/upload', form, {
       onUploadProgress: (e) => {
         if (e.total) {
           progress.value = Math.round((e.loaded / e.total) * 100)

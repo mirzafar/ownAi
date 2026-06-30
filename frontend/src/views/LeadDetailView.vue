@@ -204,8 +204,11 @@ const CATEGORY_NAME = {
   closing: 'Закрытие и следующий шаг',
 }
 
+const scoring = computed(() => analysis.value?.scoring || null)
+const leadData = computed(() => analysis.value?.lead || null)
+
 const groupedCriteria = computed(() => {
-  const sa = analysis.value?.sales_analysis
+  const sa = scoring.value
   if (!sa?.criteria_scores?.length) return []
   const byCat = {}
   for (const c of sa.criteria_scores) {
@@ -215,12 +218,11 @@ const groupedCriteria = computed(() => {
     byCat[k].earned += Number(c.score) || 0
     byCat[k].max += Number(c.max_score) || 0
   }
-  // Сохраняем фиксированный порядок категорий
   return CATEGORY_ORDER.map(k => byCat[k]).filter(Boolean)
 })
 
 const triggeredStops = computed(() => {
-  const list = analysis.value?.sales_analysis?.stop_factors || []
+  const list = scoring.value?.stop_factors || []
   return list.filter(s => s.triggered)
 })
 
@@ -255,12 +257,20 @@ function fmtAgo(s) {
   return `${Math.floor(h / 24)} дн назад`
 }
 
+function goBack() {
+  // Если в истории есть предыдущая страница в этой же вкладке — возвращаемся
+  // туда (тогда URL с фильтрами лидов восстановится). Иначе — fallback на /leads
+  // (читалка LeadsView поднимет фильтры из sessionStorage).
+  if (window.history.length > 1) router.back()
+  else router.push('/leads')
+}
+
 onMounted(load)
 </script>
 
 <template>
   <div class="container">
-    <button class="ghost back" @click="router.push('/leads')"><ArrowLeft :size="14" /> К лидам</button>
+    <button class="ghost back" @click="goBack"><ArrowLeft :size="14" /> К лидам</button>
 
     <div v-if="error" class="error-msg" style="margin-bottom:16px;">{{ error }}</div>
 
@@ -441,102 +451,84 @@ onMounted(load)
         <div class="sec-head"><h2 class="sec-title" style="margin:0;">AI-анализ лида</h2></div>
         <div class="loading">
           <span class="spinner"></span>
-          Анализирую в фоне — можно закрыть страницу и продолжить работу. Результат подгрузится сам.
+          Анализирую.
         </div>
       </div>
 
-      <div v-else-if="analysis?.status === 'done'" class="card section analysis-card">
+      <div v-else-if="analysis?.status === 'done' && leadData" class="card section analysis-card">
         <div class="sec-head">
           <h2 class="sec-title" style="margin:0;">AI-анализ лида</h2>
           <div class="analysis-meta">
-            <span :class="['risk-pill', `risk-${analysis.risk}`]">Риск: {{ riskLabel[analysis.risk] || analysis.risk }}</span>
+            <span :class="['risk-pill', `risk-${leadData.risk}`]">Риск: {{ riskLabel[leadData.risk] || leadData.risk }}</span>
             <span v-if="analysis.updated_at" class="muted small">обновлён {{ fmtAgo(analysis.updated_at) }}</span>
           </div>
         </div>
 
-        <div v-if="analysis.summary" class="analysis-summary">{{ analysis.summary }}</div>
+        <div v-if="leadData.summary" class="analysis-summary">{{ leadData.summary }}</div>
 
         <div class="analysis-grid">
-          <div v-if="analysis.client_request" class="analysis-block">
+          <div v-if="leadData.client_request" class="analysis-block">
             <div class="block-cap">Запрос клиента</div>
-            <div class="lead-text">{{ analysis.client_request }}</div>
+            <div class="lead-text">{{ leadData.client_request }}</div>
           </div>
 
-          <div v-if="analysis.next_step" class="analysis-block highlight">
+          <div v-if="leadData.next_step" class="analysis-block highlight">
             <div class="block-cap">Следующий шаг</div>
-            <div class="lead-text">{{ analysis.next_step }}</div>
+            <div class="lead-text">{{ leadData.next_step }}</div>
           </div>
 
-          <div v-if="analysis.risk_reason" class="analysis-block">
+          <div v-if="leadData.risk_reason" class="analysis-block">
             <div class="block-cap">Почему такой риск</div>
-            <div class="lead-text">{{ analysis.risk_reason }}</div>
+            <div class="lead-text">{{ leadData.risk_reason }}</div>
           </div>
 
-          <div v-if="analysis.objections?.length" class="analysis-block">
+          <div v-if="leadData.objections?.length" class="analysis-block">
             <div class="block-cap">Возражения / блокеры</div>
             <ul class="analysis-list">
-              <li v-for="(o, i) in analysis.objections" :key="'o' + i">{{ o }}</li>
+              <li v-for="(o, i) in leadData.objections" :key="'o' + i">{{ o }}</li>
             </ul>
           </div>
 
-          <div v-if="analysis.manager_pros?.length" class="analysis-block pros">
+          <div v-if="scoring?.strengths?.length" class="analysis-block pros">
             <div class="block-cap">Менеджер: плюсы</div>
             <ul class="analysis-list">
-              <li v-for="(p, i) in analysis.manager_pros" :key="'p' + i">{{ p }}</li>
+              <li v-for="(p, i) in scoring.strengths" :key="'p' + i">{{ p }}</li>
             </ul>
           </div>
 
-          <div v-if="analysis.manager_cons?.length" class="analysis-block cons">
+          <div v-if="scoring?.weaknesses?.length" class="analysis-block cons">
             <div class="block-cap">Менеджер: минусы</div>
             <ul class="analysis-list">
-              <li v-for="(c, i) in analysis.manager_cons" :key="'c' + i">{{ c }}</li>
+              <li v-for="(c, i) in scoring.weaknesses" :key="'c' + i">{{ c }}</li>
             </ul>
           </div>
         </div>
 
         <div class="analysis-foot muted small">
-          Учтено: {{ analysis.calls_count }} зв. (проанализировано {{ analysis.calls.filter(c => c.analyzed).length }}),
-          {{ analysis.comments_count }} комм.
-          <span v-if="analysis.calls.some(c => !c.analyzed)">
-            · пропущено {{ analysis.calls.filter(c => !c.analyzed).length }} (без записи или ошибка)
+          Учтено: {{ leadData.calls_count }} зв. (проанализировано {{ (leadData.call_refs || []).filter(c => c.analyzed).length }}),
+          {{ leadData.comments_count }} комм.
+          <span v-if="(leadData.call_refs || []).some(c => !c.analyzed)">
+            · пропущено {{ (leadData.call_refs || []).filter(c => !c.analyzed).length }} (без записи или ошибка)
           </span>
         </div>
       </div>
 
-      <div v-if="analysis?.status === 'done' && analysis?.sales_analysis" class="card section scorecard-card">
+      <div v-if="analysis?.status === 'done' && scoring" class="card section scorecard-card">
         <div class="sec-head scorecard-head">
           <div>
             <h2 class="sec-title" style="margin:0;">Карта оценки работы с лидом</h2>
-            <div v-if="analysis.sales_analysis.meta.system_verdict" class="scorecard-verdict">
-              {{ analysis.sales_analysis.meta.system_verdict }}
+            <div v-if="scoring.meta.verdict" class="scorecard-verdict">
+              {{ scoring.meta.verdict }}
             </div>
           </div>
           <div class="scorecard-meta">
             <div class="score-big">
-              <span class="score-num">{{ analysis.sales_analysis.meta.total_score }}</span>
+              <span class="score-num">{{ scoring.meta.normalized_score }}</span>
               <span class="score-den">/ 100</span>
             </div>
-            <span :class="['grade-pill', `grade-${gradeKey(analysis.sales_analysis.meta.grade)}`]">
-              {{ analysis.sales_analysis.meta.grade }}
+            <span :class="['grade-pill', `grade-${gradeKey(scoring.meta.grade)}`]">
+              {{ scoring.meta.grade }}
             </span>
-          </div>
-        </div>
-
-        <div
-          v-if="analysis.sales_analysis.analysis.strengths?.length || analysis.sales_analysis.analysis.weaknesses?.length"
-          class="sw-grid"
-        >
-          <div v-if="analysis.sales_analysis.analysis.strengths?.length" class="analysis-block pros">
-            <div class="block-cap">Сильные стороны</div>
-            <ul class="analysis-list">
-              <li v-for="(s, i) in analysis.sales_analysis.analysis.strengths" :key="'s' + i">{{ s }}</li>
-            </ul>
-          </div>
-          <div v-if="analysis.sales_analysis.analysis.weaknesses?.length" class="analysis-block cons">
-            <div class="block-cap">Слабые стороны</div>
-            <ul class="analysis-list">
-              <li v-for="(w, i) in analysis.sales_analysis.analysis.weaknesses" :key="'w' + i">{{ w }}</li>
-            </ul>
           </div>
         </div>
 
@@ -546,9 +538,9 @@ onMounted(load)
               <span class="cat-name">{{ cat.name }}</span>
               <span class="cat-score">{{ cat.earned }} / {{ cat.max }}</span>
             </div>
-            <div v-for="c in cat.items" :key="c.criterion_id" class="crit-row">
+            <div v-for="c in cat.items" :key="c.id" class="crit-row">
               <div class="crit-main">
-                <div class="crit-name">{{ c.criterion_name }}</div>
+                <div class="crit-name">{{ c.name }}</div>
                 <div v-if="c.comment" class="crit-comment">{{ c.comment }}</div>
               </div>
               <div class="crit-score-cell">
@@ -568,7 +560,7 @@ onMounted(load)
 
         <div v-if="triggeredStops.length" class="stops-section">
           <div class="block-cap">Сработавшие стоп-факторы</div>
-          <div v-for="sf in triggeredStops" :key="sf.factor_id" class="stop-row">
+          <div v-for="sf in triggeredStops" :key="sf.id" class="stop-row">
             <span class="stop-penalty">−{{ sf.penalty }}</span>
             <div class="stop-main">
               <div class="stop-name">{{ sf.name }}</div>
@@ -577,10 +569,10 @@ onMounted(load)
           </div>
         </div>
 
-        <div v-if="analysis.sales_analysis.ai_coaching_tasks?.length" class="coaching-section">
+        <div v-if="scoring.coaching_tasks?.length" class="coaching-section">
           <div class="block-cap">Задачи на коучинг</div>
           <div
-            v-for="(t, i) in analysis.sales_analysis.ai_coaching_tasks"
+            v-for="(t, i) in scoring.coaching_tasks"
             :key="'t' + i"
             class="coach-row"
           >
@@ -626,9 +618,9 @@ onMounted(load)
                 <Play v-else :size="13" />
               </button>
               <button
-                v-if="c.analyzed && c.transcription_id"
+                v-if="c.analyzed && c.analysis_id"
                 class="ghost small-btn"
-                @click="router.push(`/t/${c.transcription_id}`)"
+                @click="router.push(`/t/${c.analysis_id}`)"
                 title="Открыть анализ"
               >Анализ <ArrowRight :size="13" /></button>
             </div>
