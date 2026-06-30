@@ -238,6 +238,9 @@ class BitrixLead(BaseModel):
     assigned_by: str = ""
     created_at: Optional[datetime] = None
     modified_at: Optional[datetime] = None
+    analysis_status: str = ""  # "" | "processing" | "done" | "failed"
+    analysis_score: int = 0
+    analysis_risk: str = ""  # "" | "low" | "medium" | "high"
 
 
 class BitrixLeadsPage(BaseModel):
@@ -301,3 +304,36 @@ class BitrixLeadTimelineEntry(BaseModel):
 class BitrixLeadActivity(BaseModel):
     timeline: List[BitrixLeadTimelineEntry] = []
     calls: List[BitrixCall] = []
+
+
+class LeadAnalysisCallRef(BaseModel):
+    call_id: str
+    transcription_id: str = ""
+    date: Optional[datetime] = None
+    direction: str = ""
+    duration: int = 0
+    score: int = 0
+    grade: str = ""
+    analyzed: bool = False
+    skipped_reason: str = ""  # "no_record" | "transcription_failed" | ""
+
+
+class LeadAnalysisOut(BaseModel):
+    lead_id: str
+    status: str = "done"  # "done" | "processing" | "failed"
+    summary: str = ""
+    client_request: str = ""
+    objections: List[str] = []
+    manager_pros: List[str] = []
+    manager_cons: List[str] = []
+    risk: str = "low"  # low | medium | high
+    risk_reason: str = ""
+    next_step: str = ""
+    sales_analysis: Optional[SalesAnalysis] = None  # та же карта оценки (19 критериев + 4 стоп-фактора), агрегированная по лиду
+    calls_count: int = 0
+    comments_count: int = 0
+    calls: List[LeadAnalysisCallRef] = []
+    error: str = ""
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    input_hash: str = ""

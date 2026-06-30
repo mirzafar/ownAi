@@ -181,12 +181,9 @@ def _grade_for(score: int) -> str:
     return "Неудовлетворительно"
 
 
-def _build_sales_prompt() -> str:
+def _rubric_section() -> str:
+    """Описание 19 критериев и 4 стоп-факторов — переиспользуется в per-call и lead-level промптах."""
     lines: list[str] = [
-        "Ты — AI-аудитор продаж для проекта Swiss Collection by RAAF Group.",
-        "Проведи аудит телефонного звонка менеджера по продажам недвижимости",
-        "строго по приведённой ниже карте оценки (19 критериев + 4 стоп-фактора).",
-        "",
         "КРИТЕРИИ (по каждому начисли целое число от 0 до max баллов):",
         "",
     ]
@@ -214,6 +211,18 @@ def _build_sales_prompt() -> str:
         "",
         "ЛОГИКА ЗАДАЧ: для критических критериев (decision_timeline, qualification_summary, close_attempt) "
         "при оценке ниже половины max — обязательно добавь конкретную задачу в ai_coaching_tasks.",
+    ]
+    return "\n".join(lines)
+
+
+def _build_sales_prompt() -> str:
+    intro = "\n".join([
+        "Ты — AI-аудитор продаж для проекта Swiss Collection by RAAF Group.",
+        "Проведи аудит телефонного звонка менеджера по продажам недвижимости",
+        "строго по приведённой ниже карте оценки (19 критериев + 4 стоп-фактора).",
+        "",
+    ])
+    schema = "\n".join([
         "",
         "ОГРАНИЧЕНИЯ:",
         "- Верни ТОЛЬКО валидный JSON-объект (без markdown).",
@@ -230,8 +239,8 @@ def _build_sales_prompt() -> str:
         '  "stop_factors": [{"factor_id": str, "name": str, "penalty": int, "triggered": bool, "comment": str}],',
         '  "ai_coaching_tasks": [{"title": str, "focus_area": str, "action_item": str}]',
         "}",
-    ]
-    return "\n".join(lines)
+    ])
+    return intro + _rubric_section() + schema
 
 
 SALES_ANALYSIS_PROMPT = _build_sales_prompt()
@@ -251,37 +260,8 @@ def _clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
 
-async def analyze_sales_call(text: str, source: str = "call") -> SalesAnalysis:
-    safe_text = (text or "").strip()
-    if not safe_text:
-        return SalesAnalysis(
-            meta=SalesAnalysisMeta(system_verdict="Транскрипт пуст.", total_score=0, grade=_grade_for(0)),
-            analysis=SalesAnalysisBlock(),
-            criteria_scores=[],
-            stop_factors=[],
-            ai_coaching_tasks=[],
-        )
-
-    client = get_client()
-    user_block = (
-        f"ИСТОЧНИК: {source}\n"
-        f"ТРАНСКРИПТ КОММУНИКАЦИИ:\n---\n{safe_text[:20000]}\n---"
-    )
-    response = await client.chat.completions.create(
-        model=settings.openai_analysis_model,
-        temperature=0.2,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": SALES_ANALYSIS_PROMPT},
-            {"role": "user", "content": user_block},
-        ],
-    )
-    content = response.choices[0].message.content or "{}"
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        data = {}
-
+def _parse_sales_analysis(data: dict) -> SalesAnalysis:
+    """Нормализует JSON-ответ модели в SalesAnalysis с заполненными 19 критериями и 4 стоп-факторами."""
     meta_raw = data.get("meta") or {}
     analysis_raw = data.get("analysis") or {}
     criteria_raw = data.get("criteria_scores") or []
@@ -364,3 +344,152 @@ async def analyze_sales_call(text: str, source: str = "call") -> SalesAnalysis:
         stop_factors=stop_factors,
         ai_coaching_tasks=tasks[:10],
     )
+
+
+def _empty_sales_analysis(verdict: str) -> SalesAnalysis:
+    return _parse_sales_analysis({"meta": {"system_verdict": verdict}})
+
+
+async def analyze_sales_call(text: str, source: str = "call") -> SalesAnalysis:
+    safe_text = (text or "").strip()
+    if not safe_text:
+        return _empty_sales_analysis("Транскрипт пуст.")
+
+    client = get_client()
+    user_block = (
+        f"ИСТОЧНИК: {source}\n"
+        f"ТРАНСКРИПТ КОММУНИКАЦИИ:\n---\n{safe_text[:20000]}\n---"
+    )
+    response = await client.chat.completions.create(
+        model=settings.openai_analysis_model,
+        temperature=0.2,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SALES_ANALYSIS_PROMPT},
+            {"role": "user", "content": user_block},
+        ],
+    )
+    content = response.choices[0].message.content or "{}"
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        data = {}
+
+    return _parse_sales_analysis(data)
+
+
+# ============================================================================
+# Lead-level аналитика (reduce-фаза map-reduce)
+# ============================================================================
+
+def _build_lead_overall_prompt() -> str:
+    intro = "\n".join([
+        "Ты — старший AI-аудитор отдела продаж недвижимости (Swiss Collection by RAAF Group).",
+        "Тебе дают сводку по одному ЛИДУ: метаданные сделки, краткие выжимки и оценки по каждому звонку",
+        "(результат предыдущего аудита) и комментарии менеджеров из таймлайна CRM.",
+        "",
+        "Твоя задача — провести АУДИТ РАБОТЫ МЕНЕДЖЕРА С ЛИДОМ В ЦЕЛОМ по той же карте оценки,",
+        "что применяется к отдельному звонку (19 критериев + 4 стоп-фактора), агрегируя поведение",
+        "менеджера по всем звонкам и комментариям. Дополнительно дай качественную сводку по лиду.",
+        "",
+        "Оценивай так, будто перед тобой один длинный 'мета-звонок' — серия касаний с клиентом.",
+        "Если какой-то критерий не наблюдался НИ В ОДНОМ звонке/комментарии — score=0 и comment=«не наблюдалось».",
+        "Если критерий проявился хотя бы раз — оценивай по лучшему/худшему проявлению с учётом контекста (см. comment).",
+        "",
+    ])
+    schema = "\n".join([
+        "",
+        "ОГРАНИЧЕНИЯ И СТРУКТУРА ОТВЕТА:",
+        "- Верни ТОЛЬКО валидный JSON-объект (без markdown). Все тексты — на русском.",
+        "- В criteria_scores верни ВСЕ 19 критериев в указанном порядке.",
+        "- В stop_factors верни ВСЕ 4 стоп-фактора. Triggered=true только при явном подтверждении из выжимок звонков.",
+        "- total_score = sum(score) − sum(penalty по triggered=true), затем clamp 0..100.",
+        "- В next_step — конкретное действие (кому позвонить, что отправить, до какой даты).",
+        "- risk=high при долгом молчании / без следующего шага / явных негативных сигналах;",
+        "  medium при возражениях без блокировки; low при тёплом контакте и понятной траектории.",
+        "- Не дублируй пункты в objections / manager_pros / manager_cons.",
+        "",
+        "Структура JSON:",
+        "{",
+        '  "summary": str,                  // 3–6 предложений: история лида, текущее положение',
+        '  "client_request": str,           // что хочет клиент (объект, бюджет, сроки, мотивация)',
+        '  "objections": [str],             // ключевые возражения/блокеры (3–7 пунктов)',
+        '  "manager_pros": [str],           // что менеджер делает хорошо по совокупности касаний',
+        '  "manager_cons": [str],           // что менеджер упускает / делает плохо',
+        '  "risk": "low" | "medium" | "high",',
+        '  "risk_reason": str,              // 1–2 предложения',
+        '  "next_step": str,                // конкретный следующий шаг для менеджера',
+        '  "meta": {"system_verdict": str, "total_score": int, "grade": str},',
+        '  "analysis": {"strengths": [str], "weaknesses": [str]},',
+        '  "criteria_scores": [{"criterion_id": str, "criterion_name": str, "category_id": str, "category_name": str, "score": int, "max_score": int, "comment": str}],',
+        '  "stop_factors": [{"factor_id": str, "name": str, "penalty": int, "triggered": bool, "comment": str}],',
+        '  "ai_coaching_tasks": [{"title": str, "focus_area": str, "action_item": str}]',
+        "}",
+    ])
+    return intro + _rubric_section() + schema
+
+
+LEAD_OVERALL_PROMPT = _build_lead_overall_prompt()
+
+
+def _str_list(value, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()][:limit]
+
+
+def _empty_lead_overall(reason: str) -> dict:
+    sa = _empty_sales_analysis(reason)
+    return {
+        "summary": reason,
+        "client_request": "",
+        "objections": [],
+        "manager_pros": [],
+        "manager_cons": [],
+        "risk": "low",
+        "risk_reason": "Недостаточно данных.",
+        "next_step": "Связаться с клиентом и собрать первичную информацию.",
+        "sales_analysis": sa.model_dump(),
+    }
+
+
+async def analyze_lead_overall(reduce_input: str) -> dict:
+    """Reduce-фаза: на вход — текст со сводкой по лиду (мета + per-call summary + комменты).
+    Возвращает dict с качественной сводкой + полной rubric-картой (через _parse_sales_analysis).
+    """
+    safe_text = (reduce_input or "").strip()
+    if not safe_text:
+        return _empty_lead_overall("По лиду нет данных для анализа.")
+
+    client = get_client()
+    response = await client.chat.completions.create(
+        model=settings.openai_analysis_model,
+        temperature=0.2,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": LEAD_OVERALL_PROMPT},
+            {"role": "user", "content": safe_text[:30000]},
+        ],
+    )
+    content = response.choices[0].message.content or "{}"
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        data = {}
+
+    risk_raw = str(data.get("risk", "low")).strip().lower()
+    risk = risk_raw if risk_raw in ("low", "medium", "high") else "low"
+
+    sales = _parse_sales_analysis(data)
+
+    return {
+        "summary": str(data.get("summary", "")).strip(),
+        "client_request": str(data.get("client_request", "")).strip(),
+        "objections": _str_list(data.get("objections"), 10),
+        "manager_pros": _str_list(data.get("manager_pros"), 10),
+        "manager_cons": _str_list(data.get("manager_cons"), 10),
+        "risk": risk,
+        "risk_reason": str(data.get("risk_reason", "")).strip(),
+        "next_step": str(data.get("next_step", "")).strip(),
+        "sales_analysis": sales.model_dump(),
+    }

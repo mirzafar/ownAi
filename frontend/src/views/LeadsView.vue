@@ -197,6 +197,31 @@ function statusColor(s) {
   return s.color.startsWith('#') ? s.color : `#${s.color}`
 }
 
+const analyzingLeads = ref(new Set())
+
+async function startAnalysis(lead, event) {
+  event?.stopPropagation()
+  if (analyzingLeads.value.has(lead.id)) return
+  analyzingLeads.value.add(lead.id)
+  // Локально отмечаем как processing, чтобы строка обновилась мгновенно
+  lead.analysis_status = 'processing'
+  try {
+    await api.post(`/bitrix/leads/${lead.id}/analyze`)
+  } catch (e) {
+    lead.analysis_status = 'failed'
+    // Не пугаем пользователя ошибкой здесь — если кликнут в детали лида, увидит причину
+  } finally {
+    analyzingLeads.value.delete(lead.id)
+  }
+}
+
+function gradeFromScore(score) {
+  if (score >= 90) return 'reference'
+  if (score >= 75) return 'good'
+  if (score >= 60) return 'ok'
+  return 'bad'
+}
+
 // Перезагружаем при изменении query (включая возврат назад из детальной)
 watch(() => route.query, () => {
   readFromQuery()
@@ -332,6 +357,7 @@ onMounted(() => {
         <div class="col-contact">Контакт</div>
         <div class="col-mgr">Менеджер</div>
         <div class="col-date">Создан</div>
+        <div class="col-analysis">Анализ</div>
       </div>
 
       <div
@@ -378,6 +404,31 @@ onMounted(() => {
         <div class="col-date small">
           <div>{{ fmtDate(l.created_at) }}</div>
           <div class="muted">{{ fmtAgo(l.created_at) }}</div>
+        </div>
+
+        <div class="col-analysis">
+          <span v-if="l.analysis_status === 'processing'" class="ana-chip processing">
+            <span class="spinner-mini"></span> Анализирую…
+          </span>
+          <span
+            v-else-if="l.analysis_status === 'done'"
+            :class="['ana-chip', 'done', `g-${gradeFromScore(l.analysis_score)}`]"
+            :title="`Балл ${l.analysis_score} / 100${l.analysis_risk ? ' · риск: ' + l.analysis_risk : ''}`"
+          >
+            ✓ {{ l.analysis_score }}
+          </span>
+          <button
+            v-else-if="l.analysis_status === 'failed'"
+            class="ana-chip failed"
+            @click="startAnalysis(l, $event)"
+            title="Анализ упал — повторить"
+          >↻ Повторить</button>
+          <button
+            v-else
+            class="ana-chip cta"
+            @click="startAnalysis(l, $event)"
+            title="Запустить AI-анализ лида в фоне"
+          >✨ Анализ</button>
         </div>
       </div>
     </div>
@@ -449,7 +500,8 @@ onMounted(() => {
     140px               /* Сумма */
     minmax(0, 200px)    /* Контакт */
     minmax(0, 1.6fr)    /* Менеджер */
-    140px;              /* Дата */
+    140px               /* Дата */
+    130px;              /* Анализ */
   gap: 14px;
   padding: 14px 22px;
   align-items: center;
@@ -531,6 +583,44 @@ onMounted(() => {
 .pager-info { font-size: 13px; color: var(--text-dim); font-weight: 500; }
 
 .col-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-analysis { display: flex; justify-content: flex-start; align-items: center; }
+
+.ana-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  cursor: default;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+button.ana-chip { cursor: pointer; box-shadow: none; transition: background .15s, color .15s, border-color .15s; }
+button.ana-chip.cta { background: var(--brand-soft); color: var(--brand); border-color: transparent; }
+button.ana-chip.cta:hover { background: var(--brand); color: #fff; }
+button.ana-chip.failed { background: var(--danger-soft); color: var(--danger); }
+button.ana-chip.failed:hover { background: var(--danger); color: #fff; }
+.ana-chip.processing { background: var(--warn-soft); color: var(--warn); }
+.ana-chip.done.g-reference { background: #e1f4ff; color: #0a5a9e; }
+.ana-chip.done.g-good { background: var(--success-soft); color: var(--success); }
+.ana-chip.done.g-ok { background: var(--warn-soft); color: var(--warn); }
+.ana-chip.done.g-bad { background: var(--danger-soft); color: var(--danger); }
+
+.spinner-mini {
+  width: 10px; height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin .8s linear infinite;
+  opacity: .7;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .filters { padding: 18px 22px; margin-bottom: 18px; }
 .filter-grid {

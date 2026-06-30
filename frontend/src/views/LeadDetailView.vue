@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 
@@ -13,6 +13,66 @@ const activity = ref({ timeline: [], calls: [] })
 const activityLoading = ref(false)
 const activityError = ref('')
 const playingCall = ref(null)
+
+const analysis = ref(null)
+const analysisLoading = ref(false)   // загрузка кэша
+const analysisError = ref('')
+let pollTimer = null
+
+const analysisRunning = computed(() => analysis.value?.status === 'processing')
+
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(() => {
+    if (analysis.value?.status !== 'processing') {
+      stopPolling()
+      return
+    }
+    loadAnalysis(true)
+  }, 5000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function loadAnalysis(silent = false) {
+  if (!silent) analysisLoading.value = true
+  analysisError.value = ''
+  try {
+    const { data } = await api.get(`/bitrix/leads/${route.params.id}/analysis`)
+    analysis.value = data
+    if (data.status === 'processing') startPolling()
+    else stopPolling()
+  } catch (e) {
+    if (e.response?.status === 404) {
+      analysis.value = null
+      stopPolling()
+    } else if (!silent) {
+      analysisError.value = e.response?.data?.detail || 'Не удалось получить анализ'
+    }
+  } finally {
+    if (!silent) analysisLoading.value = false
+  }
+}
+
+async function runAnalysis(force = false) {
+  analysisError.value = ''
+  try {
+    const { data } = await api.post(
+      `/bitrix/leads/${route.params.id}/analyze`,
+      null,
+      { params: force ? { force: true } : {} },
+    )
+    analysis.value = data
+    if (data.status === 'processing') startPolling()
+  } catch (e) {
+    analysisError.value = e.response?.data?.detail || 'Не удалось запустить анализ'
+  }
+}
 
 async function loadActivity() {
   activityLoading.value = true
@@ -31,10 +91,12 @@ async function loadActivity() {
 async function load() {
   loading.value = true
   error.value = ''
+  analysis.value = null
   try {
     const { data } = await api.get(`/bitrix/leads/${route.params.id}`)
     lead.value = data
     loadActivity()
+    loadAnalysis()
   } catch (e) {
     error.value = e.response?.data?.detail || 'Не удалось загрузить лида'
     lead.value = null
@@ -43,7 +105,12 @@ async function load() {
   }
 }
 
-watch(() => route.params.id, load)
+watch(() => route.params.id, () => {
+  stopPolling()
+  load()
+})
+
+onBeforeUnmount(stopPolling)
 
 const fullName = computed(() => {
   if (!lead.value) return ''
@@ -59,6 +126,19 @@ const displayTitle = computed(() => {
 const hasUtm = computed(() => {
   if (!lead.value) return false
   return !!(lead.value.utm_source || lead.value.utm_medium || lead.value.utm_campaign)
+})
+
+const hasAnalyzableActivity = computed(() => {
+  const calls = activity.value?.calls?.length || 0
+  const comments = (activity.value?.timeline || []).filter(e => e.kind === 'comment').length
+  return calls > 0 || comments > 0
+})
+
+const analyzeDisabledReason = computed(() => {
+  if (analysisRunning.value) return ''
+  if (activityLoading.value) return 'Загрузка активности…'
+  if (!hasAnalyzableActivity.value) return 'По лиду нет звонков и комментариев — нечего анализировать'
+  return ''
 })
 
 function fmtDate(s) {
@@ -106,6 +186,72 @@ function togglePlay(call) {
   playingCall.value = playingCall.value === call.id ? null : call.id
 }
 
+const riskLabel = {
+  low: 'Низкий',
+  medium: 'Средний',
+  high: 'Высокий',
+}
+
+const CATEGORY_ORDER = ['opening', 'qualification', 'presentation', 'objections', 'closing']
+const CATEGORY_NAME = {
+  opening: 'Открытие звонка',
+  qualification: 'Квалификация',
+  presentation: 'Презентация объекта',
+  objections: 'Работа с возражениями',
+  closing: 'Закрытие и следующий шаг',
+}
+
+const groupedCriteria = computed(() => {
+  const sa = analysis.value?.sales_analysis
+  if (!sa?.criteria_scores?.length) return []
+  const byCat = {}
+  for (const c of sa.criteria_scores) {
+    const k = c.category_id || 'other'
+    if (!byCat[k]) byCat[k] = { id: k, name: c.category_name || CATEGORY_NAME[k] || k, items: [], earned: 0, max: 0 }
+    byCat[k].items.push(c)
+    byCat[k].earned += Number(c.score) || 0
+    byCat[k].max += Number(c.max_score) || 0
+  }
+  // Сохраняем фиксированный порядок категорий
+  return CATEGORY_ORDER.map(k => byCat[k]).filter(Boolean)
+})
+
+const triggeredStops = computed(() => {
+  const list = analysis.value?.sales_analysis?.stop_factors || []
+  return list.filter(s => s.triggered)
+})
+
+function gradeKey(grade) {
+  const g = (grade || '').toLowerCase()
+  if (g.includes('эталон')) return 'reference'
+  if (g.includes('хорош')) return 'good'
+  if (g.includes('удовл')) return 'ok'
+  return 'bad'
+}
+
+function critClass(c) {
+  const max = Number(c.max_score) || 0
+  const score = Number(c.score) || 0
+  if (!max) return 'crit-zero'
+  const r = score / max
+  if (r >= 0.8) return 'crit-good'
+  if (r >= 0.6) return 'crit-ok'
+  if (r >= 0.4) return 'crit-warn'
+  if (r > 0) return 'crit-low'
+  return 'crit-zero'
+}
+
+function fmtAgo(s) {
+  if (!s) return ''
+  const diff = Date.now() - new Date(s).getTime()
+  const min = Math.floor(diff / 60_000)
+  if (min < 1) return 'только что'
+  if (min < 60) return `${min} мин назад`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h} ч назад`
+  return `${Math.floor(h / 24)} дн назад`
+}
+
 onMounted(load)
 </script>
 
@@ -129,17 +275,30 @@ onMounted(load)
           </div>
         </div>
         <div class="hero-side">
-          <a
-            v-if="lead.bitrix_url"
-            :href="lead.bitrix_url"
-            target="_blank"
-            rel="noopener"
-            class="bitrix-btn"
-            title="Открыть карточку лида в Bitrix24"
-          >
-            <span>Открыть в Bitrix</span>
-            <span class="bitrix-arrow">↗</span>
-          </a>
+          <div class="hero-actions">
+            <button
+              class="analyze-btn"
+              :disabled="analysisRunning || !!analyzeDisabledReason"
+              @click="runAnalysis(analysis?.status === 'done')"
+              :title="analyzeDisabledReason || (analysis?.status === 'done' ? 'Пересчитать с учётом новых данных' : 'Сводный анализ по всем звонкам и комментариям')"
+            >
+              <span v-if="analysisRunning" class="spinner-sm"></span>
+              <span v-if="analysisRunning">Анализирую…</span>
+              <span v-else-if="analysis?.status === 'done'">↻ Пересчитать анализ</span>
+              <span v-else>✨ Проанализировать лид</span>
+            </button>
+            <a
+              v-if="lead.bitrix_url"
+              :href="lead.bitrix_url"
+              target="_blank"
+              rel="noopener"
+              class="bitrix-btn"
+              title="Открыть карточку лида в Bitrix24"
+            >
+              <span>Открыть в Bitrix</span>
+              <span class="bitrix-arrow">↗</span>
+            </a>
+          </div>
           <div class="hero-money">
             <div class="money-cap">Сумма</div>
             <div class="money-val">{{ fmtMoney(lead.opportunity, lead.currency_id) }}</div>
@@ -261,6 +420,172 @@ onMounted(load)
       <div v-if="lead.comments" class="card section comments-card">
         <h2 class="sec-title">Комментарий</h2>
         <div class="lead-text" v-html="lead.comments"></div>
+      </div>
+
+      <div v-if="analysisError" class="card section analysis-card error-card">
+        <div class="sec-head"><h2 class="sec-title" style="margin:0;">AI-анализ лида</h2></div>
+        <div class="error-msg">{{ analysisError }}</div>
+        <button class="ghost small-btn" @click="runAnalysis(true)" :disabled="analysisRunning">Повторить</button>
+      </div>
+
+      <div v-else-if="analysis?.status === 'failed'" class="card section analysis-card error-card">
+        <div class="sec-head"><h2 class="sec-title" style="margin:0;">AI-анализ лида</h2></div>
+        <div class="error-msg">{{ analysis.error || 'Анализ не удался' }}</div>
+        <button class="ghost small-btn" @click="runAnalysis(true)" :disabled="analysisRunning">Повторить</button>
+      </div>
+
+      <div v-else-if="analysisRunning" class="card section analysis-card placeholder-card">
+        <div class="sec-head"><h2 class="sec-title" style="margin:0;">AI-анализ лида</h2></div>
+        <div class="loading">
+          <span class="spinner"></span>
+          Анализирую в фоне — можно закрыть страницу и продолжить работу. Результат подгрузится сам.
+        </div>
+      </div>
+
+      <div v-else-if="analysis?.status === 'done'" class="card section analysis-card">
+        <div class="sec-head">
+          <h2 class="sec-title" style="margin:0;">AI-анализ лида</h2>
+          <div class="analysis-meta">
+            <span :class="['risk-pill', `risk-${analysis.risk}`]">Риск: {{ riskLabel[analysis.risk] || analysis.risk }}</span>
+            <span v-if="analysis.updated_at" class="muted small">обновлён {{ fmtAgo(analysis.updated_at) }}</span>
+          </div>
+        </div>
+
+        <div v-if="analysis.summary" class="analysis-summary">{{ analysis.summary }}</div>
+
+        <div class="analysis-grid">
+          <div v-if="analysis.client_request" class="analysis-block">
+            <div class="block-cap">Запрос клиента</div>
+            <div class="lead-text">{{ analysis.client_request }}</div>
+          </div>
+
+          <div v-if="analysis.next_step" class="analysis-block highlight">
+            <div class="block-cap">Следующий шаг</div>
+            <div class="lead-text">{{ analysis.next_step }}</div>
+          </div>
+
+          <div v-if="analysis.risk_reason" class="analysis-block">
+            <div class="block-cap">Почему такой риск</div>
+            <div class="lead-text">{{ analysis.risk_reason }}</div>
+          </div>
+
+          <div v-if="analysis.objections?.length" class="analysis-block">
+            <div class="block-cap">Возражения / блокеры</div>
+            <ul class="analysis-list">
+              <li v-for="(o, i) in analysis.objections" :key="'o' + i">{{ o }}</li>
+            </ul>
+          </div>
+
+          <div v-if="analysis.manager_pros?.length" class="analysis-block pros">
+            <div class="block-cap">Менеджер: плюсы</div>
+            <ul class="analysis-list">
+              <li v-for="(p, i) in analysis.manager_pros" :key="'p' + i">{{ p }}</li>
+            </ul>
+          </div>
+
+          <div v-if="analysis.manager_cons?.length" class="analysis-block cons">
+            <div class="block-cap">Менеджер: минусы</div>
+            <ul class="analysis-list">
+              <li v-for="(c, i) in analysis.manager_cons" :key="'c' + i">{{ c }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="analysis-foot muted small">
+          Учтено: {{ analysis.calls_count }} зв. (проанализировано {{ analysis.calls.filter(c => c.analyzed).length }}),
+          {{ analysis.comments_count }} комм.
+          <span v-if="analysis.calls.some(c => !c.analyzed)">
+            · пропущено {{ analysis.calls.filter(c => !c.analyzed).length }} (без записи или ошибка)
+          </span>
+        </div>
+      </div>
+
+      <div v-if="analysis?.status === 'done' && analysis?.sales_analysis" class="card section scorecard-card">
+        <div class="sec-head scorecard-head">
+          <div>
+            <h2 class="sec-title" style="margin:0;">Карта оценки работы с лидом</h2>
+            <div v-if="analysis.sales_analysis.meta.system_verdict" class="scorecard-verdict">
+              {{ analysis.sales_analysis.meta.system_verdict }}
+            </div>
+          </div>
+          <div class="scorecard-meta">
+            <div class="score-big">
+              <span class="score-num">{{ analysis.sales_analysis.meta.total_score }}</span>
+              <span class="score-den">/ 100</span>
+            </div>
+            <span :class="['grade-pill', `grade-${gradeKey(analysis.sales_analysis.meta.grade)}`]">
+              {{ analysis.sales_analysis.meta.grade }}
+            </span>
+          </div>
+        </div>
+
+        <div
+          v-if="analysis.sales_analysis.analysis.strengths?.length || analysis.sales_analysis.analysis.weaknesses?.length"
+          class="sw-grid"
+        >
+          <div v-if="analysis.sales_analysis.analysis.strengths?.length" class="analysis-block pros">
+            <div class="block-cap">Сильные стороны</div>
+            <ul class="analysis-list">
+              <li v-for="(s, i) in analysis.sales_analysis.analysis.strengths" :key="'s' + i">{{ s }}</li>
+            </ul>
+          </div>
+          <div v-if="analysis.sales_analysis.analysis.weaknesses?.length" class="analysis-block cons">
+            <div class="block-cap">Слабые стороны</div>
+            <ul class="analysis-list">
+              <li v-for="(w, i) in analysis.sales_analysis.analysis.weaknesses" :key="'w' + i">{{ w }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="criteria-section">
+          <div v-for="cat in groupedCriteria" :key="cat.id" class="cat-group">
+            <div class="cat-head">
+              <span class="cat-name">{{ cat.name }}</span>
+              <span class="cat-score">{{ cat.earned }} / {{ cat.max }}</span>
+            </div>
+            <div v-for="c in cat.items" :key="c.criterion_id" class="crit-row">
+              <div class="crit-main">
+                <div class="crit-name">{{ c.criterion_name }}</div>
+                <div v-if="c.comment" class="crit-comment">{{ c.comment }}</div>
+              </div>
+              <div class="crit-score-cell">
+                <div class="crit-score">
+                  <span :class="['crit-num', critClass(c)]">{{ c.score }}</span><span class="crit-max">/{{ c.max_score }}</span>
+                </div>
+                <div class="crit-bar">
+                  <div
+                    :class="['crit-bar-fill', critClass(c)]"
+                    :style="{ width: c.max_score ? (c.score / c.max_score * 100) + '%' : '0%' }"
+                  ></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="triggeredStops.length" class="stops-section">
+          <div class="block-cap">Сработавшие стоп-факторы</div>
+          <div v-for="sf in triggeredStops" :key="sf.factor_id" class="stop-row">
+            <span class="stop-penalty">−{{ sf.penalty }}</span>
+            <div class="stop-main">
+              <div class="stop-name">{{ sf.name }}</div>
+              <div v-if="sf.comment" class="stop-comment">{{ sf.comment }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="analysis.sales_analysis.ai_coaching_tasks?.length" class="coaching-section">
+          <div class="block-cap">Задачи на коучинг</div>
+          <div
+            v-for="(t, i) in analysis.sales_analysis.ai_coaching_tasks"
+            :key="'t' + i"
+            class="coach-row"
+          >
+            <div class="coach-title">{{ t.title }}</div>
+            <div v-if="t.focus_area" class="coach-focus muted small">{{ t.focus_area }}</div>
+            <div v-if="t.action_item" class="coach-action">→ {{ t.action_item }}</div>
+          </div>
+        </div>
       </div>
 
       <div class="card section calls-card">
@@ -398,8 +723,41 @@ onMounted(load)
   flex-direction: column;
   align-items: flex-end;
   gap: 12px;
-  min-width: 160px;
+  min-width: 180px;
 }
+.hero-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+.analyze-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  border: none;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: none;
+  transition: background .15s, opacity .15s;
+}
+.analyze-btn:hover { background: var(--brand-hover); }
+.analyze-btn:disabled { opacity: .7; cursor: progress; }
+.spinner-sm {
+  width: 12px; height: 12px;
+  border: 2px solid rgba(255,255,255,.5);
+  border-top-color: #fff;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .bitrix-btn {
   display: inline-flex;
   align-items: center;
@@ -543,6 +901,237 @@ a.contact-val:hover { color: var(--brand); text-decoration: underline; }
   margin-bottom: 12px;
 }
 .small { font-size: 12px; }
+
+.analysis-card { padding: 18px 22px; margin-bottom: 18px; }
+.analysis-card .sec-head { margin-bottom: 14px; }
+.analysis-meta { display: flex; align-items: center; gap: 10px; }
+.risk-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.risk-low { background: var(--success-soft); color: var(--success); }
+.risk-medium { background: var(--warn-soft); color: var(--warn); }
+.risk-high { background: var(--danger-soft); color: var(--danger); }
+.analysis-summary {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.analysis-block {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.analysis-block.highlight {
+  background: var(--brand-soft);
+  border-color: transparent;
+}
+.analysis-block.pros { border-left: 3px solid var(--success); }
+.analysis-block.cons { border-left: 3px solid var(--danger); }
+.block-cap {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.analysis-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.analysis-list li + li { margin-top: 4px; }
+.analysis-foot {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.error-card .error-msg { margin-bottom: 10px; }
+.placeholder-card .loading { padding: 16px 0 0; }
+
+.scorecard-card { padding: 20px 22px; margin-bottom: 18px; }
+.scorecard-head { align-items: flex-start; margin-bottom: 16px; }
+.scorecard-verdict {
+  font-size: 13.5px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+.scorecard-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.score-big {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+.score-num {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: var(--brand-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.score-den { font-size: 16px; color: var(--text-muted); font-weight: 600; }
+.grade-pill {
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.grade-reference { background: #e1f4ff; color: #0a5a9e; }
+.grade-good { background: var(--success-soft); color: var(--success); }
+.grade-ok { background: var(--warn-soft); color: var(--warn); }
+.grade-bad { background: var(--danger-soft); color: var(--danger); }
+
+.sw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+@media (max-width: 720px) { .sw-grid { grid-template-columns: 1fr; } }
+
+.criteria-section { display: flex; flex-direction: column; gap: 16px; }
+.cat-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.cat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.cat-name {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.cat-score {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.crit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  gap: 16px;
+  padding: 10px 14px;
+  border-top: 1px dashed var(--border);
+  align-items: center;
+}
+.crit-row:first-of-type { border-top: none; }
+.crit-main { min-width: 0; }
+.crit-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.crit-comment {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+.crit-score-cell { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+.crit-score {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 14px;
+  text-align: right;
+  font-weight: 700;
+}
+.crit-num.crit-good { color: var(--success); }
+.crit-num.crit-ok { color: #b88500; }
+.crit-num.crit-warn { color: #d97706; }
+.crit-num.crit-low { color: var(--danger); }
+.crit-num.crit-zero { color: var(--text-muted); }
+.crit-max { color: var(--text-muted); font-weight: 500; }
+.crit-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.crit-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width .3s;
+}
+.crit-bar-fill.crit-good { background: var(--success); }
+.crit-bar-fill.crit-ok { background: #f1b91a; }
+.crit-bar-fill.crit-warn { background: #f59e0b; }
+.crit-bar-fill.crit-low { background: var(--danger); }
+.crit-bar-fill.crit-zero { background: var(--text-muted); opacity: .25; }
+
+.stops-section {
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: var(--danger-soft);
+  border-radius: 12px;
+}
+.stops-section .block-cap { color: var(--danger); margin-bottom: 8px; }
+.stop-row {
+  display: grid;
+  grid-template-columns: 50px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 6px 0;
+  border-top: 1px dashed rgba(0,0,0,.08);
+}
+.stop-row:first-of-type { border-top: none; }
+.stop-penalty {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--danger);
+}
+.stop-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.stop-comment { font-size: 12.5px; color: var(--text-dim); margin-top: 2px; }
+
+.coaching-section { margin-top: 18px; }
+.coach-row {
+  padding: 10px 12px;
+  background: var(--brand-soft);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+.coach-row:last-child { margin-bottom: 0; }
+.coach-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.coach-focus { margin-top: 2px; }
+.coach-action {
+  font-size: 13px;
+  color: var(--brand);
+  margin-top: 4px;
+  font-weight: 600;
+}
 
 .calls-card { padding: 18px 22px; margin-bottom: 18px; }
 .calls-list { display: flex; flex-direction: column; }

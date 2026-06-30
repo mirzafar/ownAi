@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -5,9 +8,11 @@ import httpx
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+logger = logging.getLogger(__name__)
+
 from ..auth import get_current_user
 from ..config import settings
-from ..database import audio_bucket, transcriptions
+from ..database import audio_bucket, lead_analyses, transcriptions
 from ..models import (
     BitrixCall,
     BitrixCallsPage,
@@ -20,9 +25,12 @@ from ..models import (
     BitrixLeadStatus,
     BitrixLeadTimelineEntry,
     BitrixLeadsPage,
+    LeadAnalysisCallRef,
+    LeadAnalysisOut,
     TranscriptionOut,
 )
 from ..openai_service import (
+    analyze_lead_overall,
     analyze_sales_call,
     transcribe_audio,
 )
@@ -176,6 +184,114 @@ async def list_calls(
     return BitrixCallsPage(items=items, total=total, page=page, page_size=page_size)
 
 
+async def _ensure_call_analyzed(
+    user: dict[str, Any],
+    raw: dict[str, Any],
+    users_map: dict[str, str],
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Гарантирует, что для звонка есть готовая транскрипция+sales_analysis.
+    Возвращает (doc, reason). При успехе reason="". При пропуске doc=None, reason описывает причину
+    ("no_record", "empty_recording", "too_large", "download_failed:..", "failed:..").
+    Используется и в `/calls/{id}/analyze`, и в lead-level анализе.
+    """
+    call = _normalize_call(raw, users_map)
+    call_id = call.id
+    if not call_id:
+        return None, "invalid_id"
+
+    existing = await transcriptions.find_one({"user_id": user["_id"], "bitrix_call_id": call_id})
+    if existing and existing.get("status") == "done":
+        return existing, ""
+
+    if not call.record_url:
+        return None, "no_record"
+
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(call.record_url)
+            if resp.status_code >= 400:
+                return None, f"download_failed:{resp.status_code}"
+            audio_bytes = resp.content
+        if not audio_bytes:
+            return None, "empty_recording"
+        if len(audio_bytes) > MAX_RECORD_SIZE:
+            return None, "too_large"
+
+        now = datetime.now(timezone.utc)
+        filename = f"bitrix-call-{call_id}.mp3"
+        base_doc = {
+            "user_id": user["_id"],
+            "filename": filename,
+            "source": "bitrix_call",
+            "bitrix_call_id": call_id,
+            "bitrix_phone": call.phone,
+            "bitrix_manager": call.manager,
+            "bitrix_manager_id": call.manager_id,
+            "bitrix_direction": call.direction,
+            "bitrix_call_date": call.date,
+            "duration": call.duration,
+            "size": len(audio_bytes),
+            "status": "processing",
+            "created_at": now,
+        }
+        if existing:
+            tid = existing["_id"]
+            if existing.get("audio_file_id"):
+                try:
+                    await audio_bucket.delete(existing["audio_file_id"])
+                except Exception:
+                    pass
+            await transcriptions.update_one({"_id": tid}, {"$set": base_doc})
+        else:
+            result = await transcriptions.insert_one(base_doc)
+            tid = result.inserted_id
+
+        audio_file_id = await audio_bucket.upload_from_stream(
+            filename,
+            audio_bytes,
+            metadata={
+                "user_id": user["_id"],
+                "transcription_id": tid,
+                "bitrix_call_id": call_id,
+                "content_type": "audio/mpeg",
+            },
+        )
+        await transcriptions.update_one(
+            {"_id": tid},
+            {"$set": {"audio_file_id": audio_file_id, "audio_content_type": "audio/mpeg"}},
+        )
+
+        text = await transcribe_audio(audio_bytes, filename)
+        sales = await analyze_sales_call(text, source="call")
+        await transcriptions.update_one(
+            {"_id": tid},
+            {"$set": {
+                "text": text,
+                "sales_analysis": sales.model_dump(),
+                "status": "done",
+                "error": None,
+            }},
+        )
+        fresh = await transcriptions.find_one({"_id": tid})
+        return fresh, ""
+    except Exception as exc:
+        return None, f"failed:{str(exc)[:200]}"
+
+
+def _skip_reason_to_http(reason: str) -> HTTPException:
+    if reason == "no_record":
+        return HTTPException(status_code=400, detail="У звонка нет записи (CALL_RECORD_URL пуст)")
+    if reason == "empty_recording":
+        return HTTPException(status_code=502, detail="Пустая запись звонка")
+    if reason == "too_large":
+        return HTTPException(status_code=413, detail="Запись звонка слишком большая (>50MB)")
+    if reason.startswith("download_failed:"):
+        return HTTPException(status_code=502, detail=f"Не удалось скачать запись звонка ({reason.split(':', 1)[1]})")
+    if reason.startswith("failed:"):
+        return HTTPException(status_code=502, detail=f"Анализ не выполнен: {reason.split(':', 1)[1]}")
+    return HTTPException(status_code=502, detail=f"Анализ не выполнен: {reason}")
+
+
 @router.post("/calls/{call_id}/analyze", response_model=TranscriptionOut)
 async def analyze_call(
     call_id: str,
@@ -190,91 +306,12 @@ async def analyze_call(
     if not items:
         raise HTTPException(status_code=404, detail="Звонок не найден в Bitrix24")
     raw = items[0]
-
     users_map = await _fetch_users([str(raw.get("PORTAL_USER_ID") or "")])
-    call = _normalize_call(raw, users_map)
 
-    if not call.record_url:
-        raise HTTPException(status_code=400, detail="У звонка нет записи (CALL_RECORD_URL пуст)")
-
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        resp = await client.get(call.record_url)
-        if resp.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Не удалось скачать запись звонка ({resp.status_code})",
-            )
-        audio_bytes = resp.content
-    if not audio_bytes:
-        raise HTTPException(status_code=502, detail="Пустая запись звонка")
-    if len(audio_bytes) > MAX_RECORD_SIZE:
-        raise HTTPException(status_code=413, detail="Запись звонка слишком большая (>50MB)")
-
-    now = datetime.now(timezone.utc)
-    filename = f"bitrix-call-{call_id}.mp3"
-    base_doc = {
-        "user_id": user["_id"],
-        "filename": filename,
-        "source": "bitrix_call",
-        "bitrix_call_id": call_id,
-        "bitrix_phone": call.phone,
-        "bitrix_manager": call.manager,
-        "bitrix_manager_id": call.manager_id,
-        "bitrix_direction": call.direction,
-        "bitrix_call_date": call.date,
-        "duration": call.duration,
-        "size": len(audio_bytes),
-        "status": "processing",
-        "created_at": now,
-    }
-    if existing:
-        tid = existing["_id"]
-        # Удаляем старую запись аудио, если была — заменим свежей.
-        if existing.get("audio_file_id"):
-            try:
-                await audio_bucket.delete(existing["audio_file_id"])
-            except Exception:
-                pass
-        await transcriptions.update_one({"_id": tid}, {"$set": base_doc})
-    else:
-        result = await transcriptions.insert_one(base_doc)
-        tid = result.inserted_id
-
-    audio_file_id = await audio_bucket.upload_from_stream(
-        filename,
-        audio_bytes,
-        metadata={
-            "user_id": user["_id"],
-            "transcription_id": tid,
-            "bitrix_call_id": call_id,
-            "content_type": "audio/mpeg",
-        },
-    )
-    await transcriptions.update_one(
-        {"_id": tid},
-        {"$set": {"audio_file_id": audio_file_id, "audio_content_type": "audio/mpeg"}},
-    )
-
-    try:
-        text = await transcribe_audio(audio_bytes, filename)
-        sales = await analyze_sales_call(text, source="call")
-        update = {
-            "text": text,
-            "sales_analysis": sales.model_dump(),
-            "status": "done",
-            "error": None,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        await transcriptions.update_one(
-            {"_id": tid}, {"$set": {"status": "failed", "error": str(exc)[:500]}}
-        )
-        raise HTTPException(status_code=502, detail=f"Анализ не выполнен: {exc}")
-
-    await transcriptions.update_one({"_id": tid}, {"$set": update})
-    fresh = await transcriptions.find_one({"_id": tid})
-    return _doc_to_out(fresh)
+    doc, reason = await _ensure_call_analyzed(user, raw, users_map)
+    if doc:
+        return _doc_to_out(doc)
+    raise _skip_reason_to_http(reason)
 
 
 # ============================================================================
@@ -694,6 +731,24 @@ async def list_leads(
             )
         )
 
+    if items:
+        ids = [l.id for l in items if l.id]
+        cursor = lead_analyses.find(
+            {"user_id": user["_id"], "lead_id": {"$in": ids}},
+            {"lead_id": 1, "status": 1, "risk": 1, "sales_analysis.meta.total_score": 1},
+        )
+        analyses_map: dict[str, dict[str, Any]] = {}
+        async for doc in cursor:
+            analyses_map[str(doc.get("lead_id") or "")] = doc
+        for l in items:
+            adoc = analyses_map.get(l.id)
+            if not adoc:
+                continue
+            l.analysis_status = str(adoc.get("status") or "")
+            l.analysis_risk = str(adoc.get("risk") or "")
+            meta = (adoc.get("sales_analysis") or {}).get("meta") or {}
+            l.analysis_score = int(meta.get("total_score") or 0)
+
     return BitrixLeadsPage(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -936,3 +991,336 @@ async def get_lead_activity(
                 c.analyzed = doc.get("status") == "done"
 
     return BitrixLeadActivity(timeline=timeline, calls=calls)
+
+
+# ============================================================================
+# Lead-level аналитика (map-reduce: per-call sales_analysis → общий отчёт по лиду)
+# ============================================================================
+
+
+def _lead_analysis_doc_to_out(doc: dict[str, Any]) -> LeadAnalysisOut:
+    calls = []
+    for c in (doc.get("calls") or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            calls.append(LeadAnalysisCallRef(**c))
+        except Exception:
+            continue
+    return LeadAnalysisOut(
+        lead_id=str(doc.get("lead_id") or ""),
+        status=str(doc.get("status") or "done"),
+        summary=str(doc.get("summary") or ""),
+        client_request=str(doc.get("client_request") or ""),
+        objections=list(doc.get("objections") or []),
+        manager_pros=list(doc.get("manager_pros") or []),
+        manager_cons=list(doc.get("manager_cons") or []),
+        risk=str(doc.get("risk") or "low"),
+        risk_reason=str(doc.get("risk_reason") or ""),
+        next_step=str(doc.get("next_step") or ""),
+        sales_analysis=doc.get("sales_analysis"),
+        calls_count=int(doc.get("calls_count") or 0),
+        comments_count=int(doc.get("comments_count") or 0),
+        calls=calls,
+        error=str(doc.get("error") or ""),
+        created_at=doc.get("created_at"),
+        updated_at=doc.get("updated_at"),
+        input_hash=str(doc.get("input_hash") or ""),
+    )
+
+
+def _fmt_b24_dt(value: Any, fmt: str = "%d.%m.%Y %H:%M") -> str:
+    dt = _parse_b24_dt(value)
+    return dt.strftime(fmt) if dt else "—"
+
+
+def _build_lead_reduce_input(
+    raw_lead: dict[str, Any],
+    statuses_map: dict[str, str],
+    sources_map: dict[str, str],
+    call_refs: list[LeadAnalysisCallRef],
+    call_docs: list[Optional[dict[str, Any]]],
+    comments: list[dict[str, Any]],
+) -> str:
+    sid = str(raw_lead.get("STATUS_ID") or "")
+    src_id = str(raw_lead.get("SOURCE_ID") or "")
+
+    days_old = ""
+    created = _parse_b24_dt(raw_lead.get("DATE_CREATE"))
+    if created:
+        days = (datetime.now(timezone.utc) - created).days
+        days_old = f"{days} дн."
+
+    meta_lines = [
+        "ЛИД:",
+        f"  ID: {raw_lead.get('ID') or '—'}",
+        f"  Название: {(raw_lead.get('TITLE') or '').strip() or '—'}",
+        f"  Статус: {statuses_map.get(sid, sid) or '—'}",
+        f"  Источник: {sources_map.get(src_id, src_id) or '—'}",
+    ]
+    if raw_lead.get("OPPORTUNITY"):
+        meta_lines.append(
+            f"  Сумма: {raw_lead.get('OPPORTUNITY')} {raw_lead.get('CURRENCY_ID') or ''}".rstrip()
+        )
+    if days_old:
+        meta_lines.append(f"  Возраст лида: {days_old}")
+    card_comment = (raw_lead.get("COMMENTS") or "").strip() if isinstance(raw_lead.get("COMMENTS"), str) else ""
+    if card_comment:
+        meta_lines.append(f"  Комментарий в карточке: {card_comment[:600]}")
+
+    parts: list[str] = ["\n".join(meta_lines), ""]
+
+    analyzed_refs = [(r, d) for r, d in zip(call_refs, call_docs) if r.analyzed and d]
+    skipped_refs = [r for r in call_refs if not r.analyzed]
+
+    if analyzed_refs:
+        parts.append(
+            f"ЗВОНКИ ({len(call_refs)} шт, проанализировано {len(analyzed_refs)} из {len(call_refs)}):"
+        )
+        for r, d in analyzed_refs[:12]:
+            sa = (d or {}).get("sales_analysis") or {}
+            meta = sa.get("meta") or {}
+            analysis = sa.get("analysis") or {}
+            strengths = [str(s).strip() for s in (analysis.get("strengths") or []) if str(s).strip()]
+            weaknesses = [str(s).strip() for s in (analysis.get("weaknesses") or []) if str(s).strip()]
+            verdict = str(meta.get("system_verdict") or "").strip()
+            snippet = ((d or {}).get("text") or "")[:600].strip()
+            dt_label = r.date.strftime("%d.%m.%Y %H:%M") if r.date else "—"
+
+            block = [
+                f"[Звонок {r.call_id}] {dt_label} · {r.direction or '—'} · {r.duration}с · оценка {r.score} ({r.grade or '—'})",
+            ]
+            if verdict:
+                block.append(f"  Резюме: {verdict}")
+            if strengths:
+                block.append("  Плюсы менеджера: " + "; ".join(strengths))
+            if weaknesses:
+                block.append("  Минусы менеджера: " + "; ".join(weaknesses))
+            if snippet:
+                block.append(f"  Начало транскрипта: {snippet}")
+            parts.append("\n".join(block))
+        if skipped_refs:
+            parts.append(
+                f"(Пропущено звонков: {len(skipped_refs)} — без записи или с ошибкой анализа)"
+            )
+        parts.append("")
+    else:
+        parts.append("ЗВОНКОВ С УСПЕШНЫМ АНАЛИЗОМ НЕТ.")
+        if call_refs:
+            parts.append(f"(Всего звонков по лиду: {len(call_refs)}, у всех нет записи или анализ не прошёл)")
+        parts.append("")
+
+    if comments:
+        parts.append(f"КОММЕНТАРИИ ТАЙМЛАЙНА ({len(comments)} шт):")
+        for c in comments[:40]:
+            dt_label = _fmt_b24_dt(c.get("CREATED"), "%d.%m %H:%M")
+            text = str(c.get("COMMENT") or "").strip().replace("\n", " ")[:500]
+            if text:
+                parts.append(f"  [{dt_label}] {text}")
+
+    return "\n".join(parts)
+
+
+async def _run_lead_analysis_bg(
+    user: dict[str, Any],
+    lead_id: str,
+    raw_lead: dict[str, Any],
+    raw_calls: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    force: bool,
+) -> None:
+    """Фоновая корутина: считает hash, проверяет кэш, дотранскрибирует звонки,
+    зовёт reduce, сохраняет финальный результат в lead_analyses. Любые исключения
+    переводят документ в status=failed с error-сообщением."""
+    try:
+        call_ids_sorted = sorted([str(r.get("ID") or "") for r in raw_calls if r.get("ID")])
+        last_comment_id = max(
+            (str(c.get("ID") or "") for c in comments if c.get("ID")),
+            default="",
+        )
+        hasher = hashlib.sha256()
+        hasher.update("|".join(call_ids_sorted).encode())
+        hasher.update(b"::")
+        hasher.update(last_comment_id.encode())
+        hasher.update(b"::")
+        hasher.update(str(raw_lead.get("STATUS_ID") or "").encode())
+        hasher.update(b"::")
+        hasher.update(str(raw_lead.get("DATE_MODIFY") or "").encode())
+        input_hash = hasher.hexdigest()[:16]
+
+        cached = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
+        # Если hash совпал и есть свежий done — просто отметим, что обновлений нет.
+        if (
+            cached
+            and not force
+            and cached.get("input_hash") == input_hash
+            and cached.get("status") == "done"
+            and cached.get("sales_analysis")
+        ):
+            await lead_analyses.update_one(
+                {"user_id": user["_id"], "lead_id": lead_id},
+                {"$set": {"status": "done", "updated_at": datetime.now(timezone.utc), "error": ""}},
+            )
+            return
+
+        user_ids = [str(r.get("PORTAL_USER_ID") or "") for r in raw_calls]
+        users_map = await _fetch_users(user_ids)
+
+        call_refs: list[LeadAnalysisCallRef] = []
+        call_docs: list[Optional[dict[str, Any]]] = []
+        for raw in raw_calls:
+            call = _normalize_call(raw, users_map)
+            doc, reason = await _ensure_call_analyzed(user, raw, users_map)
+            ref = LeadAnalysisCallRef(
+                call_id=call.id,
+                transcription_id=str(doc["_id"]) if doc else "",
+                date=call.date,
+                direction=call.direction,
+                duration=call.duration,
+                analyzed=bool(doc),
+                skipped_reason="" if doc else reason,
+            )
+            if doc:
+                meta = (doc.get("sales_analysis") or {}).get("meta") or {}
+                ref.score = int(meta.get("total_score") or 0)
+                ref.grade = str(meta.get("grade") or "")
+            call_refs.append(ref)
+            call_docs.append(doc)
+
+        statuses_map = {s.status_id: s.name for s in await _fetch_lead_statuses()}
+        sources_map = {s.status_id: s.name for s in await _fetch_lead_sources()}
+
+        reduce_input = _build_lead_reduce_input(
+            raw_lead, statuses_map, sources_map, call_refs, call_docs, comments,
+        )
+        result = await analyze_lead_overall(reduce_input)
+
+        now = datetime.now(timezone.utc)
+        doc_set = {
+            "user_id": user["_id"],
+            "lead_id": lead_id,
+            "status": "done",
+            "input_hash": input_hash,
+            "summary": result["summary"],
+            "client_request": result["client_request"],
+            "objections": result["objections"],
+            "manager_pros": result["manager_pros"],
+            "manager_cons": result["manager_cons"],
+            "risk": result["risk"],
+            "risk_reason": result["risk_reason"],
+            "next_step": result["next_step"],
+            "sales_analysis": result.get("sales_analysis"),
+            "calls_count": len(call_refs),
+            "comments_count": len(comments),
+            "calls": [r.model_dump() for r in call_refs],
+            "error": "",
+            "updated_at": now,
+        }
+        await lead_analyses.update_one(
+            {"user_id": user["_id"], "lead_id": lead_id},
+            {"$set": doc_set, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Фоновый анализ лида %s упал", lead_id)
+        await lead_analyses.update_one(
+            {"user_id": user["_id"], "lead_id": lead_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error": str(exc)[:500],
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {
+                    "user_id": user["_id"],
+                    "lead_id": lead_id,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            },
+            upsert=True,
+        )
+
+
+@router.post("/leads/{lead_id}/analyze", response_model=LeadAnalysisOut)
+async def analyze_lead(
+    lead_id: str,
+    force: bool = Query(False, description="Игнорировать кэш и пересчитать"),
+    user=Depends(get_current_user),
+) -> LeadAnalysisOut:
+    """Запускает анализ лида в фоне и сразу возвращает текущее состояние документа.
+    Фронт может либо опросить GET /leads/{id}/analysis, либо подождать notification."""
+    if not lead_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Некорректный ID лида")
+
+    existing = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
+    if existing and existing.get("status") == "processing":
+        # Не плодим параллельные таски — пользователь увидит текущий статус.
+        return _lead_analysis_doc_to_out(existing)
+
+    # Быстрая валидация — успеваем за пару b24-запросов, дальше уходим в фон.
+    lead_data = await _b24("crm.lead.get", {"id": lead_id})
+    raw_lead = lead_data.get("result")
+    if not raw_lead:
+        raise HTTPException(status_code=404, detail="Лид не найден")
+
+    call_data = await _b24(
+        "voximplant.statistic.get",
+        {
+            "FILTER": {"CRM_ENTITY_TYPE": "LEAD", "CRM_ENTITY_ID": lead_id},
+            "SORT": "CALL_START_DATE",
+            "ORDER": "ASC",
+        },
+    )
+    raw_calls = [r for r in (call_data.get("result") or []) if isinstance(r, dict)]
+
+    try:
+        com_data = await _b24(
+            "crm.timeline.comment.list",
+            {
+                "filter": {"ENTITY_ID": int(lead_id), "ENTITY_TYPE": "lead"},
+                "order": {"CREATED": "ASC"},
+            },
+        )
+        comments = [c for c in (com_data.get("result") or []) if isinstance(c, dict)]
+    except HTTPException:
+        comments = []
+
+    if not raw_calls and not comments:
+        raise HTTPException(
+            status_code=400,
+            detail="По лиду нет звонков и комментариев — нечего анализировать.",
+        )
+
+    now = datetime.now(timezone.utc)
+    await lead_analyses.update_one(
+        {"user_id": user["_id"], "lead_id": lead_id},
+        {
+            "$set": {"status": "processing", "updated_at": now, "error": ""},
+            "$setOnInsert": {
+                "user_id": user["_id"],
+                "lead_id": lead_id,
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+    asyncio.create_task(
+        _run_lead_analysis_bg(user, lead_id, raw_lead, raw_calls, comments, force)
+    )
+
+    fresh = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
+    return _lead_analysis_doc_to_out(fresh)
+
+
+@router.get("/leads/{lead_id}/analysis", response_model=LeadAnalysisOut)
+async def get_lead_analysis(
+    lead_id: str,
+    user=Depends(get_current_user),
+) -> LeadAnalysisOut:
+    if not lead_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="Некорректный ID лида")
+    doc = await lead_analyses.find_one({"user_id": user["_id"], "lead_id": lead_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Анализ ещё не выполнен")
+    return _lead_analysis_doc_to_out(doc)

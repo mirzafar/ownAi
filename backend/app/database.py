@@ -7,6 +7,7 @@ db = client[settings.mongo_db]
 
 users = db["users"]
 transcriptions = db["transcriptions"]
+lead_analyses = db["lead_analyses"]
 audio_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="call_audio")
 
 
@@ -24,6 +25,10 @@ async def ensure_indexes() -> None:
         [("user_id", 1), ("bitrix_chat_id", 1)],
         unique=True,
         partialFilterExpression={"bitrix_chat_id": {"$type": "string"}},
+    )
+    await lead_analyses.create_index(
+        [("user_id", 1), ("lead_id", 1)],
+        unique=True,
     )
 
     # Если в системе нет ни одного админа — повышаем самого старого пользователя.
