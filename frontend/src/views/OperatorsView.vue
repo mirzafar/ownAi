@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import { Search, UserRound, SearchX, ChevronRight } from 'lucide-vue-next'
 
 const router = useRouter()
 const operators = ref([])
@@ -102,8 +103,11 @@ onMounted(load)
       </div>
     </div>
 
-    <div class="toolbar">
-      <input v-model="query" class="search" type="search" placeholder="Поиск по имени оператора…" />
+    <div class="toolbar card">
+      <div class="search-wrap">
+        <Search :size="16" class="search-ico" />
+        <input v-model="query" class="search-input" type="search" placeholder="Поиск по имени оператора…" />
+      </div>
     </div>
 
     <div v-if="error" class="error-msg" style="margin-bottom:16px;">{{ error }}</div>
@@ -111,13 +115,13 @@ onMounted(load)
     <div v-if="loading" class="loading"><span class="spinner"></span> Загрузка…</div>
 
     <div v-else-if="!operators.length" class="empty card">
-      <div class="empty-icon">👤</div>
+      <div class="empty-icon"><UserRound :size="28" /></div>
       <h3>Пока нет операторов</h3>
       <p>Как только появятся звонки из Bitrix24 — здесь соберётся список.</p>
     </div>
 
     <div v-else-if="!filtered.length" class="empty card">
-      <div class="empty-icon">🔍</div>
+      <div class="empty-icon"><SearchX :size="28" /></div>
       <h3>Ничего не найдено</h3>
     </div>
 
@@ -128,16 +132,22 @@ onMounted(load)
           <div class="row-title">{{ op.manager || 'Без имени' }}</div>
           <div class="row-meta">
             <span>ID: {{ op.manager_id || '—' }}</span>
-            <span>· Звонков: <b>{{ op.calls }}</b></span>
-            <span>· Анализов: <b>{{ op.analyzed }}</b></span>
-            <span>· Длит.: <b>{{ fmtDuration(op.total_duration) }}</b></span>
-            <span>· Последний: <b>{{ fmtDate(op.last_call_at) }}</b></span>
+            <span class="dot-sep">·</span>
+            <span>Звонков: <b>{{ op.calls }}</b></span>
+            <span class="dot-sep">·</span>
+            <span>Анализов: <b>{{ op.analyzed }}</b></span>
+            <span class="dot-sep">·</span>
+            <span>Длит.: <b>{{ fmtDuration(op.total_duration) }}</b></span>
+            <span class="dot-sep">·</span>
+            <span>Последний: <b>{{ fmtDate(op.last_call_at) }}</b></span>
           </div>
         </div>
         <div class="score-pill" :class="scoreClass(op.avg_score)">
           {{ op.avg_score ?? '—' }}
         </div>
-        <button class="ghost" @click.stop="open(op)">Открыть →</button>
+        <button class="ghost open-btn" @click.stop="open(op)">
+          <ChevronRight :size="16" />
+        </button>
       </div>
     </div>
   </div>
@@ -149,29 +159,59 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
-  margin-bottom: 22px;
+  margin-bottom: 18px;
 }
 .stat { padding: 18px 20px; }
-.stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .stat-value {
-  font-size: 28px;
-  font-weight: 800;
+  font-size: 26px;
+  font-weight: 700;
   letter-spacing: -0.02em;
   margin-top: 4px;
-  background: var(--brand-grad);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--text);
 }
-.toolbar { margin-bottom: 16px; }
-.search { max-width: 460px; padding: 12px 16px; }
+.toolbar {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 460px;
+  display: flex;
+  align-items: center;
+}
+.search-ico {
+  position: absolute;
+  left: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.search-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px 9px 36px;
+  font-size: 14px;
+}
 
 .loading { display: flex; align-items: center; gap: 10px; color: var(--text-dim); padding: 30px 0; }
 
 .empty { text-align: center; padding: 60px 30px; }
-.empty-icon { font-size: 42px; margin-bottom: 10px; color: var(--brand); }
-.empty h3 { margin: 0 0 6px; font-size: 20px; }
-.empty p { color: var(--text-dim); margin: 0; }
+.empty-icon {
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  display: grid; place-items: center;
+  margin: 0 auto 12px;
+}
+.empty h3 { margin: 0 0 6px; font-size: 18px; }
+.empty p { color: var(--text-dim); margin: 0; font-size: 14px; }
 
 .list { padding: 0; overflow: hidden; }
 .row-item {
@@ -187,17 +227,18 @@ onMounted(load)
 .row-item:hover { background: var(--surface-2); }
 
 .avatar {
-  width: 44px; height: 44px;
+  width: 42px; height: 42px;
   border-radius: 50%;
   background: var(--brand-grad);
   color: #fff;
   display: grid; place-items: center;
   font-weight: 700; font-size: 14px;
   flex-shrink: 0;
+  box-shadow: 0 6px 16px -8px rgba(20, 184, 166, 0.45);
 }
 .info { flex: 1; min-width: 0; }
 .row-title {
-  font-weight: 600; font-size: 15px;
+  font-weight: 600; font-size: 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .row-meta {
@@ -205,25 +246,34 @@ onMounted(load)
   margin-top: 4px;
   display: flex; gap: 6px; flex-wrap: wrap;
 }
+.dot-sep { color: var(--border-strong); }
+.row-meta b { color: var(--text-dim); font-weight: 600; }
+
 .score-pill {
-  min-width: 52px; height: 52px;
-  border-radius: 14px;
+  min-width: 56px; height: 36px;
+  border-radius: 10px;
   padding: 0 12px;
   display: grid; place-items: center;
-  font-weight: 800; font-size: 18px;
+  font-weight: 700; font-size: 14px;
   flex-shrink: 0;
   letter-spacing: -0.02em;
 }
 .score-pill.good { background: var(--success-soft); color: var(--success); }
-.score-pill.ok { background: var(--brand-soft); color: var(--brand); }
+.score-pill.ok { background: var(--brand-soft); color: var(--brand-hover); }
 .score-pill.warn { background: var(--warn-soft); color: var(--warn); }
 .score-pill.bad { background: var(--danger-soft); color: var(--danger); }
-.score-pill.empty { background: var(--surface-3); color: var(--text-muted); font-size: 16px; }
+.score-pill.empty { background: var(--surface-3); color: var(--text-muted); }
 
-.row-item button { padding: 7px 12px; font-size: 12px; flex-shrink: 0; }
+.open-btn {
+  width: 32px; height: 32px;
+  padding: 0;
+  display: grid; place-items: center;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
 
 @media (max-width: 800px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
-  .row-item button { display: none; }
+  .open-btn { display: none; }
 }
 </style>

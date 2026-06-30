@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { Check } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -33,7 +34,7 @@ const showBar = computed(() => props.progress !== null && props.progress >= 0)
             }"
           >
             <div class="proc-step-mark">
-              <span v-if="i < activeIndex">✓</span>
+              <Check v-if="i < activeIndex" :size="12" />
               <span v-else-if="i === activeIndex" class="proc-mini-spinner"></span>
               <span v-else>{{ i + 1 }}</span>
             </div>
@@ -56,7 +57,7 @@ const showBar = computed(() => props.progress !== null && props.progress >= 0)
 .proc-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(16, 24, 40, 0.55);
+  background: rgba(15, 23, 42, 0.55);
   backdrop-filter: blur(6px);
   z-index: 300;
   display: grid;
@@ -68,6 +69,7 @@ const showBar = computed(() => props.progress !== null && props.progress >= 0)
   max-width: 440px;
   padding: 32px 28px 24px;
   text-align: center;
+  border-radius: var(--radius-xl);
   animation: proc-pop .2s ease;
 }
 @keyframes proc-pop {
@@ -111,7 +113,7 @@ const showBar = computed(() => props.progress !== null && props.progress >= 0)
   border-radius: 10px;
   transition: background .2s;
 }
-.proc-step.active { background: var(--brand-soft-2); }
+.proc-step.active { background: var(--brand-soft); }
 .proc-step.done .proc-step-label { color: var(--text-dim); }
 .proc-step.pending .proc-step-label { color: var(--text-muted); }
 .proc-step-mark {

@@ -3,6 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import { useTasksStore } from '../stores/tasks'
+import {
+  Calendar, Phone, RefreshCw, X, Play,
+  ArrowDownLeft, ArrowUpRight, ArrowRight, Sparkles,
+  ChevronLeft, ChevronRight,
+} from 'lucide-vue-next'
 
 const router = useRouter()
 const tasks = useTasksStore()
@@ -179,9 +184,9 @@ onMounted(load)
         <h1 class="page-title">Звонки</h1>
       </div>
       <div class="spacer"></div>
-      <button class="ghost" @click="load" :disabled="loading">
+      <button class="ghost refresh-btn" @click="load" :disabled="loading">
         <span v-if="loading" class="spinner"></span>
-        <span v-else>Обновить</span>
+        <template v-else><RefreshCw :size="14" /> Обновить</template>
       </button>
     </div>
 
@@ -207,12 +212,12 @@ onMounted(load)
           <label class="label">Период</label>
           <div class="date-range">
             <label class="date-input">
-              <span class="cal-ico">📅</span>
+              <Calendar :size="14" class="cal-ico" />
               <input type="date" v-model="dateFrom" />
             </label>
             <span class="date-sep">—</span>
             <label class="date-input">
-              <span class="cal-ico">📅</span>
+              <Calendar :size="14" class="cal-ico" />
               <input type="date" v-model="dateTo" />
             </label>
           </div>
@@ -238,7 +243,7 @@ onMounted(load)
     </div>
 
     <div v-else-if="!items.length" class="empty card">
-      <div class="empty-icon">📞</div>
+      <div class="empty-icon"><Phone :size="28" /></div>
       <h3>Звонки не найдены</h3>
       <p>Измените фильтры или проверьте подключение.</p>
     </div>
@@ -267,7 +272,7 @@ onMounted(load)
 
         <div class="col-direction">
           <span class="dir-badge" :class="item.direction === 'Входящий' ? 'in' : 'out'">
-            <span class="arrow">{{ item.direction === 'Входящий' ? '↙' : '↗' }}</span>
+            <component :is="item.direction === 'Входящий' ? ArrowDownLeft : ArrowUpRight" :size="12" />
             {{ item.direction || '—' }}
           </span>
         </div>
@@ -291,8 +296,8 @@ onMounted(load)
             :title="playingId === item.id ? 'Скрыть плеер' : 'Слушать'"
             @click="togglePlay(item)"
           >
-            <span v-if="playingId === item.id">✕</span>
-            <span v-else>▶</span>
+            <X v-if="playingId === item.id" :size="14" />
+            <Play v-else :size="14" />
           </button>
           <span v-else class="muted">—</span>
         </div>
@@ -304,9 +309,7 @@ onMounted(load)
             title="Открыть анализ"
             @click="openExisting(item)"
           >
-            <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M5 10h10M11 6l4 4-4 4" />
-            </svg>
+            <ArrowRight :size="16" />
           </button>
           <button
             v-else
@@ -316,9 +319,7 @@ onMounted(load)
             @click="startAnalyze(item)"
           >
             <span v-if="isAnalyzing(item.id)" class="spinner"></span>
-            <svg v-else viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M10 3v3M10 14v3M3 10h3M14 10h3M5.5 5.5l2 2M12.5 12.5l2 2M5.5 14.5l2-2M12.5 7.5l2-2" />
-            </svg>
+            <Sparkles v-else :size="16" />
           </button>
         </div>
 
@@ -329,9 +330,13 @@ onMounted(load)
     </div>
 
     <div v-if="items.length" class="pager">
-      <button class="ghost" @click="changePage(-1)" :disabled="page === 1 || loading">← Назад</button>
+      <button class="ghost pager-btn" @click="changePage(-1)" :disabled="page === 1 || loading">
+        <ChevronLeft :size="14" /> Назад
+      </button>
       <span class="pager-info">Стр. {{ page }} из {{ totalPages }}</span>
-      <button class="ghost" @click="changePage(1)" :disabled="page >= totalPages || loading">Вперёд →</button>
+      <button class="ghost pager-btn" @click="changePage(1)" :disabled="page >= totalPages || loading">
+        Вперёд <ChevronRight :size="14" />
+      </button>
     </div>
 
   </div>
@@ -353,16 +358,15 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 6px 10px;
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  border-radius: 10px;
+  padding: 4px 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .date-range:focus-within {
   border-color: var(--brand);
-  background: var(--surface);
-  box-shadow: 0 0 0 4px rgba(3, 129, 254, 0.15);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
 }
 .date-input {
   position: relative;
@@ -374,13 +378,13 @@ onMounted(load)
   padding: 6px 8px;
   cursor: pointer;
 }
-.date-input .cal-ico { font-size: 14px; opacity: 0.7; pointer-events: none; }
+.date-input .cal-ico { color: var(--text-muted); pointer-events: none; }
 .date-input input {
   border: none;
   background: transparent;
   padding: 0;
   width: 100%;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text);
   font-family: inherit;
@@ -410,34 +414,34 @@ onMounted(load)
   font-size: 12px;
   font-weight: 600;
   border-radius: 999px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-dim);
   box-shadow: none;
   cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
 }
-.chip:hover { background: var(--surface-3); color: var(--text); }
+.chip:hover { background: var(--surface-2); color: var(--text); }
 .chip.active {
-  background: var(--brand);
-  color: #fff;
-  border-color: transparent;
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+  border-color: rgba(20, 184, 166, 0.25);
 }
-.chip.active:hover { background: var(--brand-hover); }
 
 .select {
   width: 100%;
   font-family: inherit;
-  font-size: 15px;
+  font-size: 14px;
   color: var(--text);
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
+  border-radius: 10px;
+  padding: 11px 14px;
   outline: none;
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 8'%3e%3cpath fill='none' stroke='%238a93a0' stroke-width='1.5' d='M1 1l6 6 6-6'/%3e%3c/svg%3e");
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 8'%3e%3cpath fill='none' stroke='%2394A3B8' stroke-width='1.5' d='M1 1l6 6 6-6'/%3e%3c/svg%3e");
   background-repeat: no-repeat;
   background-position: right 14px center;
   background-size: 12px;
@@ -445,16 +449,25 @@ onMounted(load)
 }
 .select:focus {
   border-color: var(--brand);
-  background-color: var(--surface);
-  box-shadow: 0 0 0 4px rgba(3, 129, 254, 0.15);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
 }
 
 .loading { display: flex; align-items: center; gap: 10px; color: var(--text-dim); padding: 30px 0; }
 
 .empty { text-align: center; padding: 60px 30px; }
-.empty-icon { font-size: 48px; margin-bottom: 12px; }
-.empty h3 { margin: 0 0 6px; font-size: 20px; }
-.empty p { color: var(--text-dim); margin: 0; }
+.empty-icon {
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  display: grid; place-items: center;
+  margin: 0 auto 12px;
+}
+.empty h3 { margin: 0 0 6px; font-size: 18px; }
+.empty p { color: var(--text-dim); margin: 0; font-size: 14px; }
+
+.refresh-btn { display: inline-flex; align-items: center; gap: 6px; }
+.pager-btn { display: inline-flex; align-items: center; gap: 4px; }
 
 .table { padding: 0; overflow: hidden; }
 
@@ -463,11 +476,11 @@ onMounted(load)
   grid-template-columns: 130px 130px 160px 1fr 80px 70px 70px;
   gap: 14px;
   padding: 14px 22px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
@@ -484,21 +497,20 @@ onMounted(load)
 }
 .trow:last-child { border-bottom: none; }
 .trow:hover { background: var(--surface-2); }
-.trow.analyzed { background: linear-gradient(90deg, rgba(31, 157, 85, 0.05) 0%, transparent 30%); }
+.trow.analyzed { background: linear-gradient(90deg, rgba(16, 185, 129, 0.04) 0%, transparent 35%); }
 
 .date-main { font-weight: 600; font-size: 13px; }
 .date-sub { font-size: 12px; color: var(--text-muted); }
 
 .dir-badge {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 5px;
   padding: 4px 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
 }
 .dir-badge.in { color: var(--success); background: var(--success-soft); }
-.dir-badge.out { color: var(--brand); background: var(--brand-soft); }
-.dir-badge .arrow { font-weight: 700; }
+.dir-badge.out { color: var(--brand-hover); background: var(--brand-soft); }
 
 .mono { font-family: 'SF Mono', Menlo, monospace; font-size: 13px; }
 .muted { color: var(--text-muted); }
@@ -522,27 +534,25 @@ onMounted(load)
 .col-actions { display: flex; justify-content: flex-end; }
 
 .play-icon {
-  width: 36px; height: 36px;
+  width: 34px; height: 34px;
   padding: 0;
-  border-radius: 50%;
+  border-radius: 10px;
   display: grid; place-items: center;
   background: var(--brand-soft);
   border: 1px solid transparent;
-  color: var(--brand);
-  font-size: 13px;
+  color: var(--brand-hover);
   box-shadow: none;
 }
-.play-icon:hover { background: #d9e9ff; color: var(--brand-hover); }
+.play-icon:hover { background: rgba(20, 184, 166, 0.15); }
 .play-icon.active {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.play-icon.active:hover { background: #ffe2e3; }
 
 .action-icon {
-  width: 36px; height: 36px;
+  width: 34px; height: 34px;
   padding: 0;
-  border-radius: 50%;
+  border-radius: 10px;
   display: grid; place-items: center;
   border: 1px solid transparent;
   box-shadow: none;
@@ -552,7 +562,7 @@ onMounted(load)
 .action-icon.analyze {
   background: var(--brand);
   color: #fff;
-  box-shadow: 0 6px 16px -8px rgba(3, 129, 254, 0.6);
+  box-shadow: 0 6px 14px -6px rgba(20, 184, 166, 0.55);
 }
 .action-icon.analyze:hover { background: var(--brand-hover); }
 .action-icon.analyze:disabled {
@@ -564,9 +574,8 @@ onMounted(load)
 .action-icon.open {
   background: var(--success-soft);
   color: var(--success);
-  border-color: transparent;
 }
-.action-icon.open:hover { background: #d6f0e0; }
+.action-icon.open:hover { background: #D1FAE5; }
 
 .player-row {
   grid-column: 1 / -1;

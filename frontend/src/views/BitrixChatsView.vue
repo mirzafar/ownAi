@@ -1,10 +1,11 @@
 <script setup>
+import { MessagesSquare, Check } from 'lucide-vue-next'
 </script>
 
 <template>
   <div class="container">
     <div class="stub card">
-      <div class="stub-icon">💬</div>
+      <div class="stub-icon"><MessagesSquare :size="36" /></div>
       <div class="stub-tag">Скоро</div>
       <h1 class="stub-title">Чаты появятся здесь</h1>
       <p class="stub-sub">
@@ -14,15 +15,15 @@
       </p>
       <div class="stub-list">
         <div class="stub-item">
-          <span class="stub-dot">✓</span>
+          <span class="stub-dot"><Check :size="12" /></span>
           <span>Список диалогов с фильтром по дате и каналу</span>
         </div>
         <div class="stub-item">
-          <span class="stub-dot">✓</span>
+          <span class="stub-dot"><Check :size="12" /></span>
           <span>Анализ переписки по тем же критериям, что и звонки</span>
         </div>
         <div class="stub-item">
-          <span class="stub-dot">✓</span>
+          <span class="stub-dot"><Check :size="12" /></span>
           <span>Операторы и средний балл чатов в Dashboard</span>
         </div>
       </div>
@@ -40,9 +41,21 @@
   margin-right: auto;
 }
 .stub-icon {
-  font-size: 56px;
-  margin-bottom: 14px;
-  filter: drop-shadow(0 12px 28px rgba(3, 129, 254, 0.25));
+  width: 72px; height: 72px;
+  border-radius: 20px;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid; place-items: center;
+  margin: 0 auto 18px;
+  box-shadow: 0 16px 40px -16px rgba(20, 184, 166, 0.55);
+}
+.stub-dot {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: var(--success-soft);
+  color: var(--success);
+  display: grid; place-items: center;
+  flex-shrink: 0;
 }
 .stub-tag {
   display: inline-block;
@@ -86,15 +99,5 @@
   border-radius: 12px;
   font-size: 14px;
   color: var(--text);
-}
-.stub-dot {
-  width: 22px; height: 22px;
-  border-radius: 50%;
-  background: var(--success-soft);
-  color: var(--success);
-  display: grid; place-items: center;
-  font-size: 12px;
-  font-weight: 800;
-  flex-shrink: 0;
 }
 </style>

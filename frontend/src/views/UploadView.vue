@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import ProcessOverlay from '../components/ProcessOverlay.vue'
+import { UploadCloud, AudioLines } from 'lucide-vue-next'
 
 const router = useRouter()
 const file = ref(null)
@@ -101,14 +102,14 @@ function reset() {
       <input ref="inputRef" type="file" accept="audio/*,video/*" @change="onFile" hidden />
 
       <div v-if="!file" class="dz-empty">
-        <div class="dz-icon">⬆️</div>
+        <div class="dz-icon"><UploadCloud :size="34" /></div>
         <h3>Перетащите файл сюда</h3>
         <p>или нажмите чтобы выбрать</p>
         <small>MP3, WAV, M4A, OGG, WEBM, MP4 · до 25 МБ</small>
       </div>
 
       <div v-else class="dz-file">
-        <div class="file-icon">🎵</div>
+        <div class="file-icon"><AudioLines :size="22" /></div>
         <div class="file-info">
           <div class="file-name">{{ file.name }}</div>
           <div class="file-meta">{{ fileSize }} · {{ file.type || 'audio' }}</div>
@@ -155,15 +156,27 @@ function reset() {
 .dropzone.has { cursor: default; padding: 24px; }
 
 .dz-empty .dz-icon {
-  font-size: 42px;
-  margin-bottom: 10px;
+  width: 64px; height: 64px;
+  border-radius: 18px;
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+  display: grid; place-items: center;
+  margin: 0 auto 14px;
 }
 .dz-empty h3 { margin: 4px 0; font-size: 18px; font-weight: 700; }
 .dz-empty p { margin: 0; color: var(--text-dim); font-size: 14px; }
 .dz-empty small { display:block; margin-top: 14px; color: var(--text-muted); font-size: 12px; }
 
 .dz-file { display: flex; align-items: center; gap: 14px; text-align: left; }
-.file-icon { font-size: 36px; }
+.file-icon {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid; place-items: center;
+  flex-shrink: 0;
+  box-shadow: 0 8px 20px -10px rgba(20, 184, 166, 0.55);
+}
 .file-info { flex: 1; min-width: 0; }
 .file-name {
   font-weight: 600;

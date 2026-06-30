@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import { ArrowLeft, TrendingUp, TrendingDown, Minus, ArrowRight } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -236,7 +237,7 @@ onMounted(load)
 <template>
   <div class="container">
     <div class="head">
-      <button class="ghost back" @click="router.push('/operators')">← К операторам</button>
+      <button class="ghost back" @click="router.push('/operators')"><ArrowLeft :size="14" /> К операторам</button>
     </div>
 
     <div v-if="error" class="error-msg" style="margin-bottom:16px;">{{ error }}</div>
@@ -301,13 +302,13 @@ onMounted(load)
             <div class="trend-main">
               <div class="trend-cap">Изменение среднего балла</div>
               <div class="trend-val" :class="deltaClass(trend.change)">
-                <span class="arr">{{ trend.change > 0 ? '↑' : trend.change < 0 ? '↓' : '→' }}</span>
+                <component :is="trend.change > 0 ? TrendingUp : trend.change < 0 ? TrendingDown : Minus" :size="18" class="arr" />
                 {{ fmtDelta(trend.change) }}
                 <span class="trend-unit">балла</span>
               </div>
               <div class="trend-sub">
                 {{ fmtDayShort(trend.first.date) }} ({{ trend.first.avg_score }})
-                →
+                <ArrowRight :size="13" style="vertical-align:middle;" />
                 {{ fmtDayShort(trend.last.date) }} ({{ trend.last.avg_score }})
               </div>
             </div>
@@ -327,16 +328,16 @@ onMounted(load)
             <svg :viewBox="`0 0 ${chart.W} ${chart.H}`" preserveAspectRatio="none" class="chart-svg">
               <defs>
                 <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#0381fe" stop-opacity="0.32" />
-                  <stop offset="100%" stop-color="#0381fe" stop-opacity="0" />
+                  <stop offset="0%" stop-color="#14B8A6" stop-opacity="0.32" />
+                  <stop offset="100%" stop-color="#14B8A6" stop-opacity="0" />
                 </linearGradient>
                 <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
                   <stop offset="0%" stop-color="#33a0ff" />
-                  <stop offset="100%" stop-color="#0381fe" />
+                  <stop offset="100%" stop-color="#14B8A6" />
                 </linearGradient>
                 <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#0381fe" stop-opacity="0.25" />
-                  <stop offset="100%" stop-color="#0381fe" stop-opacity="0.08" />
+                  <stop offset="0%" stop-color="#14B8A6" stop-opacity="0.25" />
+                  <stop offset="100%" stop-color="#14B8A6" stop-opacity="0.08" />
                 </linearGradient>
                 <filter id="lineGlow" x="-20%" y="-50%" width="140%" height="200%">
                   <feGaussianBlur in="SourceAlpha" stdDeviation="2.5" />
@@ -524,7 +525,7 @@ onMounted(load)
   display: grid; place-items: center;
   font-weight: 800; font-size: 22px;
   flex-shrink: 0;
-  box-shadow: 0 8px 22px -10px rgba(3, 129, 254, 0.45);
+  box-shadow: 0 8px 22px -10px rgba(20, 184, 166, 0.45);
 }
 .profile-info { flex: 1; min-width: 0; }
 .profile-name { font-size: 22px; font-weight: 800; margin: 0; letter-spacing: -0.02em; }
@@ -664,7 +665,7 @@ onMounted(load)
   to { stroke-dasharray: 2000 0; }
 }
 .chart-svg .hover-guide {
-  stroke: #0381fe;
+  stroke: #14B8A6;
   stroke-width: 1.2;
   stroke-dasharray: 2 4;
   opacity: .55;
@@ -672,12 +673,12 @@ onMounted(load)
 }
 .chart-svg .dot {
   fill: #fff;
-  stroke: #0381fe;
+  stroke: #14B8A6;
   stroke-width: 2.5;
   transition: r .18s cubic-bezier(.4, 1.4, .6, 1), stroke-width .18s ease;
 }
 .chart-svg .dot-halo {
-  fill: #0381fe;
+  fill: #14B8A6;
   opacity: 0;
   transition: r .25s cubic-bezier(.4, 1.4, .6, 1), opacity .2s ease;
 }
@@ -738,8 +739,8 @@ onMounted(load)
 }
 .lg-item { display: inline-flex; align-items: center; gap: 6px; }
 .lg-dot { width: 12px; height: 4px; border-radius: 2px; }
-.lg-dot.line { background: #0381fe; }
-.lg-dot.bar { background: rgba(3, 129, 254, 0.35); }
+.lg-dot.line { background: #14B8A6; }
+.lg-dot.bar { background: rgba(20, 184, 166, 0.35); }
 
 .list { padding: 0; overflow: hidden; }
 .row-item {

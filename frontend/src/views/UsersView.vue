@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import api from '../api'
 import { useAuthStore } from '../stores/auth'
+import { Users as UsersIcon, Plus, KeyRound, Trash2, X } from 'lucide-vue-next'
 
 const auth = useAuthStore()
 
@@ -115,7 +116,9 @@ onMounted(load)
         <p class="page-subtitle">Управление учётными записями системы.</p>
       </div>
       <div class="spacer"></div>
-      <button class="primary" @click="resetForm(); showCreate = true">+ Добавить</button>
+      <button class="primary add-btn" @click="resetForm(); showCreate = true">
+        <Plus :size="16" /> Добавить
+      </button>
     </div>
 
     <div v-if="error" class="error-msg" style="margin-bottom:16px;">{{ error }}</div>
@@ -123,7 +126,7 @@ onMounted(load)
     <div v-if="loading" class="loading"><span class="spinner"></span> Загрузка…</div>
 
     <div v-else-if="!users.length" class="empty card">
-      <div class="empty-icon">👥</div>
+      <div class="empty-icon"><UsersIcon :size="28" /></div>
       <h3>Нет пользователей</h3>
     </div>
 
@@ -142,13 +145,17 @@ onMounted(load)
           </div>
         </div>
         <div class="actions">
-          <button class="ghost" title="Сбросить пароль" @click="openReset(u)">🔑 Пароль</button>
+          <button class="ghost" title="Сбросить пароль" @click="openReset(u)">
+            <KeyRound :size="14" /> Пароль
+          </button>
           <button
             class="danger"
             :disabled="u.id === auth.user?.id"
             :title="u.id === auth.user?.id ? 'Нельзя удалить себя' : ''"
             @click="remove(u)"
-          >Удалить</button>
+          >
+            <Trash2 :size="14" /> Удалить
+          </button>
         </div>
       </div>
     </div>
@@ -157,7 +164,7 @@ onMounted(load)
       <div class="modal card" style="max-width:460px;">
         <div class="modal-head">
           <h2 class="modal-title">Сброс пароля</h2>
-          <button class="ghost icon-btn" @click="closeReset" :disabled="resetting">✕</button>
+          <button class="ghost icon-btn" @click="closeReset" :disabled="resetting"><X :size="14" /></button>
         </div>
         <p style="color:var(--text-dim);font-size:14px;margin:0 0 16px;">
           Новый пароль для <b>@{{ resetTarget.login }}</b>. Сообщите его пользователю — текущий пароль перестанет работать.
@@ -183,7 +190,7 @@ onMounted(load)
       <div class="modal card">
         <div class="modal-head">
           <h2 class="modal-title">Новый пользователь</h2>
-          <button class="ghost icon-btn" @click="showCreate = false" :disabled="creating">✕</button>
+          <button class="ghost icon-btn" @click="showCreate = false" :disabled="creating"><X :size="14" /></button>
         </div>
 
         <form class="modal-form" @submit.prevent="create">
@@ -238,7 +245,16 @@ onMounted(load)
 .loading { display: flex; align-items: center; gap: 10px; color: var(--text-dim); padding: 30px 0; }
 
 .empty { text-align: center; padding: 60px 30px; }
-.empty-icon { font-size: 42px; margin-bottom: 10px; }
+.empty-icon {
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  display: grid; place-items: center;
+  margin: 0 auto 12px;
+}
+
+.add-btn { display: inline-flex; align-items: center; gap: 6px; }
 
 .list { padding: 0; overflow: hidden; }
 .row-item {
@@ -250,20 +266,21 @@ onMounted(load)
 }
 .row-item:last-child { border-bottom: none; }
 .avatar {
-  width: 44px; height: 44px;
+  width: 42px; height: 42px;
   border-radius: 50%;
   background: var(--brand-grad);
   color: #fff;
   display: grid; place-items: center;
   font-weight: 700; font-size: 14px;
   flex-shrink: 0;
+  box-shadow: 0 6px 16px -8px rgba(20, 184, 166, 0.45);
 }
 .info { flex: 1; min-width: 0; }
-.row-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.row-title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
 .admin-chip {
-  font-size: 11px;
+  font-size: 10px;
   background: var(--brand-soft);
-  color: var(--brand);
+  color: var(--brand-hover);
   padding: 2px 8px;
   border-radius: 999px;
   font-weight: 700;
@@ -271,11 +288,12 @@ onMounted(load)
   text-transform: uppercase;
 }
 .row-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap; }
-.actions button { padding: 7px 12px; font-size: 12px; }
+.actions { display: flex; gap: 8px; }
+.actions button { padding: 7px 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
 
 .overlay {
   position: fixed; inset: 0;
-  background: rgba(16, 24, 40, 0.45);
+  background: rgba(15, 23, 42, 0.40);
   backdrop-filter: blur(4px);
   z-index: 200;
   display: grid; place-items: center;
@@ -285,10 +303,16 @@ onMounted(load)
   width: 100%;
   max-width: 560px;
   padding: 28px;
+  border-radius: var(--radius-xl);
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.modal-title { font-size: 20px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
-.icon-btn { padding: 6px 12px; font-size: 14px; }
+.modal-title { font-size: 18px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.icon-btn {
+  width: 32px; height: 32px;
+  padding: 0;
+  display: grid; place-items: center;
+  border-radius: 10px;
+}
 
 .modal-form { display: flex; flex-direction: column; gap: 16px; }
 .grid {

@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import ProcessOverlay from './ProcessOverlay.vue'
+import { UploadCloud, AudioLines, X } from 'lucide-vue-next'
 
 const emit = defineEmits(['close'])
 const router = useRouter()
@@ -98,7 +99,7 @@ async function upload() {
     <div class="modal card">
       <div class="modal-head">
         <h2 class="modal-title">Загрузка аудио</h2>
-        <button class="ghost icon-btn" @click="close" :disabled="loading">✕</button>
+        <button class="ghost icon-btn" @click="close" :disabled="loading"><X :size="14" /></button>
       </div>
       <p class="modal-sub">Перетащите файл или выберите с диска — расшифруем и сделаем анализ.</p>
 
@@ -113,14 +114,14 @@ async function upload() {
         <input ref="inputRef" type="file" accept="audio/*,video/*" @change="onFile" hidden />
 
         <div v-if="!file" class="dz-empty">
-          <div class="dz-icon">⬆️</div>
+          <div class="dz-icon"><UploadCloud :size="28" /></div>
           <div class="dz-title">Перетащите файл сюда</div>
           <div class="dz-sub">или нажмите чтобы выбрать</div>
           <small>MP3, WAV, M4A, OGG, WEBM, MP4 · до 25 МБ</small>
         </div>
 
         <div v-else class="dz-file">
-          <div class="file-icon">🎵</div>
+          <div class="file-icon"><AudioLines :size="18" /></div>
           <div class="file-info">
             <div class="file-name">{{ file.name }}</div>
             <div class="file-meta">{{ fileSize }}</div>
@@ -154,7 +155,7 @@ async function upload() {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(16, 24, 40, 0.45);
+  background: rgba(15, 23, 42, 0.40);
   backdrop-filter: blur(4px);
   z-index: 200;
   display: grid;
@@ -165,6 +166,7 @@ async function upload() {
   width: 100%;
   max-width: 540px;
   padding: 28px;
+  border-radius: var(--radius-xl);
   animation: pop .18s ease;
 }
 @keyframes pop {
@@ -172,8 +174,13 @@ async function upload() {
   to { transform: scale(1); opacity: 1; }
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.modal-title { font-size: 20px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
-.icon-btn { padding: 6px 12px; font-size: 14px; }
+.modal-title { font-size: 18px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.icon-btn {
+  width: 32px; height: 32px;
+  padding: 0;
+  display: grid; place-items: center;
+  border-radius: 10px;
+}
 .modal-sub { color: var(--text-dim); font-size: 14px; margin: 6px 0 18px; }
 
 .dropzone {
@@ -181,20 +188,34 @@ async function upload() {
   background: var(--surface-2);
   padding: 28px 20px;
   text-align: center;
-  border-radius: var(--radius);
+  border-radius: 14px;
   cursor: pointer;
   transition: background .15s, border-color .15s, transform .12s;
 }
-.dropzone.dragging { border-color: var(--brand); background: var(--brand-soft-2); }
+.dropzone.dragging { border-color: var(--brand); background: var(--brand-soft); }
 .dropzone.has { cursor: default; padding: 18px; }
 
-.dz-empty .dz-icon { font-size: 36px; margin-bottom: 6px; }
-.dz-title { font-weight: 700; font-size: 15px; }
+.dz-empty .dz-icon {
+  width: 52px; height: 52px;
+  border-radius: 14px;
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+  display: grid; place-items: center;
+  margin: 0 auto 8px;
+}
+.dz-title { font-weight: 600; font-size: 15px; }
 .dz-sub { color: var(--text-dim); font-size: 13px; }
 .dz-empty small { display: block; margin-top: 10px; color: var(--text-muted); font-size: 12px; }
 
 .dz-file { display: flex; align-items: center; gap: 12px; text-align: left; }
-.file-icon { font-size: 28px; }
+.file-icon {
+  width: 38px; height: 38px;
+  border-radius: 10px;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid; place-items: center;
+  flex-shrink: 0;
+}
 .file-info { flex: 1; min-width: 0; }
 .file-name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }

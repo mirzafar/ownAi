@@ -1,5 +1,6 @@
 <script setup>
 import { useTasksStore } from '../stores/tasks'
+import { Check, AlertTriangle, X } from 'lucide-vue-next'
 
 const tasks = useTasksStore()
 </script>
@@ -15,8 +16,8 @@ const tasks = useTasksStore()
       >
         <div class="bg-icon">
           <span v-if="t.status === 'running'" class="bg-spinner"></span>
-          <span v-else-if="t.status === 'done'">✓</span>
-          <span v-else>!</span>
+          <Check v-else-if="t.status === 'done'" :size="14" />
+          <AlertTriangle v-else :size="14" />
         </div>
         <div class="bg-body">
           <div class="bg-title">{{ t.label }}</div>
@@ -26,7 +27,7 @@ const tasks = useTasksStore()
             <template v-else>{{ t.error }}</template>
           </div>
         </div>
-        <button class="bg-close" @click="tasks.dismiss(t.id)" title="Скрыть">✕</button>
+        <button class="bg-close" @click="tasks.dismiss(t.id)" title="Скрыть"><X :size="12" /></button>
       </div>
     </TransitionGroup>
   </div>
@@ -62,13 +63,12 @@ const tasks = useTasksStore()
 
 .bg-icon {
   width: 28px; height: 28px;
-  border-radius: 50%;
+  border-radius: 8px;
   display: grid; place-items: center;
   flex-shrink: 0;
   background: var(--brand-soft);
-  color: var(--brand);
-  font-weight: 800;
-  font-size: 14px;
+  color: var(--brand-hover);
+  font-weight: 700;
 }
 .bg-toast.done .bg-icon { background: var(--success-soft); color: var(--success); }
 .bg-toast.error .bg-icon { background: var(--danger-soft); color: var(--danger); }

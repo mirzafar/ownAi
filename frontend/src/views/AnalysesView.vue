@@ -2,6 +2,7 @@
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
+import { Search, Sparkles, SearchX, Trash2, ChevronRight, Phone, MessagesSquare } from 'lucide-vue-next'
 
 const router = useRouter()
 const items = ref([])
@@ -117,8 +118,11 @@ onMounted(load)
       </div>
     </div>
 
-    <div class="toolbar">
-      <input v-model="query" class="search" type="search" placeholder="Поиск по названию, тексту или вердикту…" />
+    <div class="toolbar card">
+      <div class="search-wrap">
+        <Search :size="16" class="search-ico" />
+        <input v-model="query" class="search-input" type="search" placeholder="Поиск по названию, тексту или вердикту…" />
+      </div>
     </div>
 
     <div v-if="error" class="error-msg" style="margin-bottom:16px;">{{ error }}</div>
@@ -128,13 +132,13 @@ onMounted(load)
     </div>
 
     <div v-else-if="!items.length" class="empty card">
-      <div class="empty-icon">✦</div>
+      <div class="empty-icon"><Sparkles :size="28" /></div>
       <h3>Пока нет анализов</h3>
       <p>Загрузите аудио — мы расшифруем и сделаем разбор.</p>
     </div>
 
     <div v-else-if="!filtered.length" class="empty card">
-      <div class="empty-icon">🔍</div>
+      <div class="empty-icon"><SearchX :size="28" /></div>
       <h3>Ничего не найдено</h3>
       <p>Попробуйте другой запрос.</p>
     </div>
@@ -155,8 +159,8 @@ onMounted(load)
             <div class="row-summary">{{ preview(item) }}</div>
             <div class="row-meta">
               <span>{{ fmtDate(item.created_at) }}</span>
-              <span v-if="item.source === 'bitrix_call'" class="meta-chip">Звонок · Bitrix24</span>
-              <span v-else-if="item.source === 'bitrix_chat'" class="meta-chip">Чат · {{ item.bitrix_channel || 'Bitrix24' }}</span>
+              <span v-if="item.source === 'bitrix_call'" class="meta-chip"><Phone :size="11" />Звонок · Bitrix24</span>
+              <span v-else-if="item.source === 'bitrix_chat'" class="meta-chip"><MessagesSquare :size="11" />Чат · {{ item.bitrix_channel || 'Bitrix24' }}</span>
               <span v-if="item.analysis?.sentiment" class="badge" :class="item.analysis.sentiment">
                 {{ item.analysis.sentiment }}
               </span>
@@ -165,8 +169,12 @@ onMounted(load)
           </div>
         </div>
         <div class="row-right" @click.stop>
-          <button class="ghost" @click="router.push(`/t/${item.id}`)">Открыть</button>
-          <button class="danger" @click="remove(item.id)">Удалить</button>
+          <button class="ghost open-btn" @click="router.push(`/t/${item.id}`)">
+            <ChevronRight :size="16" />
+          </button>
+          <button class="danger" @click="remove(item.id)">
+            <Trash2 :size="14" />
+          </button>
         </div>
       </div>
     </div>
@@ -179,29 +187,54 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
-  margin-bottom: 22px;
+  margin-bottom: 18px;
 }
 .stat { padding: 18px 20px; }
-.stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .stat-value {
-  font-size: 28px;
-  font-weight: 800;
+  font-size: 26px;
+  font-weight: 700;
   letter-spacing: -0.02em;
   margin-top: 4px;
-  background: var(--brand-grad);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--text);
 }
-.toolbar { margin-bottom: 16px; }
-.search { max-width: 460px; padding: 12px 16px; }
+.toolbar {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 460px;
+  display: flex;
+  align-items: center;
+}
+.search-ico { position: absolute; left: 12px; color: var(--text-muted); pointer-events: none; }
+.search-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px 9px 36px;
+  font-size: 14px;
+}
 
 .loading { display: flex; align-items: center; gap: 10px; color: var(--text-dim); padding: 30px 0; }
 
 .empty { text-align: center; padding: 60px 30px; }
-.empty-icon { font-size: 42px; margin-bottom: 10px; color: var(--brand); }
-.empty h3 { margin: 0 0 6px; font-size: 20px; }
-.empty p { color: var(--text-dim); margin: 0; }
+.empty-icon {
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  display: grid; place-items: center;
+  margin: 0 auto 12px;
+}
+.empty h3 { margin: 0 0 6px; font-size: 18px; }
+.empty p { color: var(--text-dim); margin: 0; font-size: 14px; }
 
 .list { padding: 0; overflow: hidden; }
 .row-item {
@@ -217,22 +250,22 @@ onMounted(load)
 .row-item:hover { background: var(--surface-2); }
 .row-left { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
 .score-pill {
-  width: 52px; height: 52px;
-  border-radius: 14px;
+  width: 48px; height: 48px;
+  border-radius: 12px;
   display: grid; place-items: center;
-  font-weight: 800; font-size: 18px;
+  font-weight: 700; font-size: 16px;
   flex-shrink: 0;
   letter-spacing: -0.02em;
 }
 .score-pill.good { background: var(--success-soft); color: var(--success); }
-.score-pill.ok { background: var(--brand-soft); color: var(--brand); }
+.score-pill.ok { background: var(--brand-soft); color: var(--brand-hover); }
 .score-pill.warn { background: var(--warn-soft); color: var(--warn); }
 .score-pill.bad { background: var(--danger-soft); color: var(--danger); }
-.score-pill.empty { background: var(--surface-3); color: var(--text-muted); font-size: 16px; }
+.score-pill.empty { background: var(--surface-3); color: var(--text-muted); font-size: 14px; }
 
 .info { flex: 1; min-width: 0; }
 .row-title {
-  font-weight: 600; font-size: 15px;
+  font-weight: 600; font-size: 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .row-summary {
@@ -247,16 +280,23 @@ onMounted(load)
   font-size: 12px; color: var(--text-muted);
 }
 .meta-chip {
+  display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
   background: var(--brand-soft);
-  color: var(--brand);
+  color: var(--brand-hover);
   font-weight: 600;
 }
 
-.row-right { display: flex; gap: 8px; flex-shrink: 0; }
-.row-right button { padding: 7px 12px; font-size: 12px; }
+.row-right { display: flex; gap: 6px; flex-shrink: 0; }
+.row-right button {
+  width: 34px; height: 34px;
+  padding: 0;
+  display: grid; place-items: center;
+  font-size: 12px;
+}
+.open-btn { border-radius: 10px; }
 
 @media (max-width: 800px) {
   .stats { grid-template-columns: repeat(2, 1fr); }

@@ -2,6 +2,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import {
+  Search, ClipboardList, RefreshCw, RotateCcw, Sparkles, Check,
+  ChevronLeft, ChevronRight,
+} from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -243,9 +247,9 @@ onMounted(() => {
         <p class="page-subtitle">Сделки на стадии воронки. По 20 на страницу.</p>
       </div>
       <div class="spacer"></div>
-      <button class="ghost" @click="load" :disabled="loading">
+      <button class="ghost refresh-btn" @click="load" :disabled="loading">
         <span v-if="loading" class="spinner"></span>
-        <span v-else>Обновить</span>
+        <template v-else><RefreshCw :size="14" /> Обновить</template>
       </button>
     </div>
 
@@ -342,7 +346,7 @@ onMounted(() => {
     <div v-if="loading" class="loading"><span class="spinner"></span> Загрузка лидов…</div>
 
     <div v-else-if="!items.length" class="empty card">
-      <div class="empty-icon">📋</div>
+      <div class="empty-icon"><ClipboardList :size="28" /></div>
       <h3>Лидов нет</h3>
       <p>Для выбранного статуса ничего не найдено.</p>
     </div>
@@ -415,30 +419,34 @@ onMounted(() => {
             :class="['ana-chip', 'done', `g-${gradeFromScore(l.analysis_score)}`]"
             :title="`Балл ${l.analysis_score} / 100${l.analysis_risk ? ' · риск: ' + l.analysis_risk : ''}`"
           >
-            ✓ {{ l.analysis_score }}
+            <Check :size="12" /> {{ l.analysis_score }}
           </span>
           <button
             v-else-if="l.analysis_status === 'failed'"
             class="ana-chip failed"
             @click="startAnalysis(l, $event)"
             title="Анализ упал — повторить"
-          >↻ Повторить</button>
+          ><RotateCcw :size="12" /> Повторить</button>
           <button
             v-else
             class="ana-chip cta"
             @click="startAnalysis(l, $event)"
             title="Запустить AI-анализ лида в фоне"
-          >✨ Анализ</button>
+          ><Sparkles :size="12" /> Анализ</button>
         </div>
       </div>
     </div>
 
     <div v-if="items.length" class="pager">
-      <button class="ghost" @click="changePage(-1)" :disabled="filters.page === 1 || loading">← Назад</button>
+      <button class="ghost pager-btn" @click="changePage(-1)" :disabled="filters.page === 1 || loading">
+        <ChevronLeft :size="14" /> Назад
+      </button>
       <span class="pager-info">
         Стр. {{ filters.page }} из {{ totalPages }} · всего {{ total }}
       </span>
-      <button class="ghost" @click="changePage(1)" :disabled="filters.page >= totalPages || loading">Вперёд →</button>
+      <button class="ghost pager-btn" @click="changePage(1)" :disabled="filters.page >= totalPages || loading">
+        Вперёд <ChevronRight :size="14" />
+      </button>
     </div>
   </div>
 </template>
@@ -466,28 +474,37 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
   border-radius: 999px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-dim);
   box-shadow: none;
   cursor: pointer;
   transition: background .15s, color .15s, border-color .15s;
 }
-.chip:hover { background: var(--surface-3); color: var(--text); }
+.chip:hover { background: var(--surface-2); color: var(--text); }
 .chip.active {
-  background: var(--brand);
-  color: #fff;
-  border-color: transparent;
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+  border-color: rgba(20, 184, 166, 0.25);
 }
-.chip.active:hover { background: var(--brand-hover); }
+.chip.active:hover { background: var(--brand-soft); }
 .muted { color: var(--text-muted); font-size: 13px; }
 
 .loading { display: flex; align-items: center; gap: 10px; color: var(--text-dim); padding: 30px 0; }
 
 .empty { text-align: center; padding: 60px 30px; }
-.empty-icon { font-size: 42px; margin-bottom: 10px; color: var(--brand); }
-.empty h3 { margin: 0 0 6px; font-size: 20px; }
-.empty p { color: var(--text-dim); margin: 0; }
+.empty-icon {
+  width: 56px; height: 56px;
+  border-radius: 16px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  display: grid; place-items: center;
+  margin: 0 auto 12px;
+}
+.empty h3 { margin: 0 0 6px; font-size: 18px; }
+.empty p { color: var(--text-dim); margin: 0; font-size: 14px; }
+.refresh-btn { display: inline-flex; align-items: center; gap: 6px; }
+.pager-btn { display: inline-flex; align-items: center; gap: 4px; }
 
 .table { padding: 0; overflow: hidden; }
 .thead, .trow {
@@ -540,7 +557,7 @@ onMounted(() => {
   padding: 4px 10px;
   border-radius: 999px;
   background: var(--brand-soft);
-  color: var(--brand);
+  color: var(--brand-hover);
   font-size: 12px;
   font-weight: 600;
   overflow: hidden;
@@ -601,12 +618,12 @@ onMounted(() => {
   color: var(--text-dim);
 }
 button.ana-chip { cursor: pointer; box-shadow: none; transition: background .15s, color .15s, border-color .15s; }
-button.ana-chip.cta { background: var(--brand-soft); color: var(--brand); border-color: transparent; }
+button.ana-chip.cta { background: var(--brand-soft); color: var(--brand-hover); border-color: transparent; }
 button.ana-chip.cta:hover { background: var(--brand); color: #fff; }
 button.ana-chip.failed { background: var(--danger-soft); color: var(--danger); }
 button.ana-chip.failed:hover { background: var(--danger); color: #fff; }
 .ana-chip.processing { background: var(--warn-soft); color: var(--warn); }
-.ana-chip.done.g-reference { background: #e1f4ff; color: #0a5a9e; }
+.ana-chip.done.g-reference { background: var(--info-soft); color: var(--info); }
 .ana-chip.done.g-good { background: var(--success-soft); color: var(--success); }
 .ana-chip.done.g-ok { background: var(--warn-soft); color: var(--warn); }
 .ana-chip.done.g-bad { background: var(--danger-soft); color: var(--danger); }
@@ -645,7 +662,7 @@ button.ana-chip.failed:hover { background: var(--danger); color: #fff; }
   font-size: 13px;
   font-family: inherit;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 10px;
   background: var(--surface);
   color: var(--text);
 }

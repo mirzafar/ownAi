@@ -2,6 +2,9 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import {
+  ArrowLeft, ArrowRight, RotateCcw, Sparkles, X, Play, MessageSquare,
+} from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -257,7 +260,7 @@ onMounted(load)
 
 <template>
   <div class="container">
-    <button class="ghost back" @click="router.push('/leads')">← К лидам</button>
+    <button class="ghost back" @click="router.push('/leads')"><ArrowLeft :size="14" /> К лидам</button>
 
     <div v-if="error" class="error-msg" style="margin-bottom:16px;">{{ error }}</div>
 
@@ -284,8 +287,8 @@ onMounted(load)
             >
               <span v-if="analysisRunning" class="spinner-sm"></span>
               <span v-if="analysisRunning">Анализирую…</span>
-              <span v-else-if="analysis?.status === 'done'">↻ Пересчитать анализ</span>
-              <span v-else>✨ Проанализировать лид</span>
+              <span v-else-if="analysis?.status === 'done'" class="btn-inline"><RotateCcw :size="14" /> Пересчитать анализ</span>
+              <span v-else class="btn-inline"><Sparkles :size="14" /> Проанализировать лид</span>
             </button>
             <a
               v-if="lead.bitrix_url"
@@ -583,7 +586,7 @@ onMounted(load)
           >
             <div class="coach-title">{{ t.title }}</div>
             <div v-if="t.focus_area" class="coach-focus muted small">{{ t.focus_area }}</div>
-            <div v-if="t.action_item" class="coach-action">→ {{ t.action_item }}</div>
+            <div v-if="t.action_item" class="coach-action"><ArrowRight :size="14" /> {{ t.action_item }}</div>
           </div>
         </div>
       </div>
@@ -619,15 +622,15 @@ onMounted(load)
                 :title="playingCall === c.id ? 'Скрыть плеер' : 'Слушать'"
                 @click="togglePlay(c)"
               >
-                <span v-if="playingCall === c.id">✕</span>
-                <span v-else>▶</span>
+                <X v-if="playingCall === c.id" :size="13" />
+                <Play v-else :size="13" />
               </button>
               <button
                 v-if="c.analyzed && c.transcription_id"
                 class="ghost small-btn"
                 @click="router.push(`/t/${c.transcription_id}`)"
                 title="Открыть анализ"
-              >Анализ →</button>
+              >Анализ <ArrowRight :size="13" /></button>
             </div>
             <div v-if="playingCall === c.id && c.record_url" class="call-player">
               <audio :src="c.record_url" controls autoplay preload="none" style="width:100%;"></audio>
@@ -1004,7 +1007,7 @@ a.contact-val:hover { color: var(--brand); text-decoration: underline; }
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
-.grade-reference { background: #e1f4ff; color: #0a5a9e; }
+.grade-reference { background: var(--info-soft); color: var(--info); }
 .grade-good { background: var(--success-soft); color: var(--success); }
 .grade-ok { background: var(--warn-soft); color: var(--warn); }
 .grade-bad { background: var(--danger-soft); color: var(--danger); }
@@ -1169,7 +1172,7 @@ a.contact-val:hover { color: var(--brand); text-decoration: underline; }
   box-shadow: none;
   cursor: pointer;
 }
-.play-icon:hover { background: #d9e9ff; }
+.play-icon:hover { background: rgba(20, 184, 166, 0.18); }
 .play-icon.active { background: var(--danger-soft); color: var(--danger); }
 .small-btn { padding: 6px 12px; font-size: 12px; }
 .call-player { grid-column: 1 / -1; padding-top: 4px; }

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import { useTasksStore } from '../stores/tasks'
+import { ArrowLeft, RotateCcw, Check, Target, Trash2 } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -207,7 +208,7 @@ onMounted(load)
 
 <template>
   <div class="container">
-    <button class="ghost back" @click="router.push('/analyses')">← Назад</button>
+    <button class="ghost back" @click="router.push('/analyses')"><ArrowLeft :size="14" /> Назад</button>
 
     <div v-if="loading" class="row" style="color:var(--text-dim);gap:10px;">
       <span class="spinner"></span> Loading…
@@ -238,7 +239,7 @@ onMounted(load)
             @click="retranscribe"
           >
             <span v-if="retranscribing" class="row" style="gap:8px;"><span class="spinner"></span> Транскрайб…</span>
-            <span v-else>↻ Транскрайб</span>
+            <span v-else class="btn-inline"><RotateCcw :size="14" /> Транскрайб</span>
           </button>
           <button
             class="ghost"
@@ -247,9 +248,9 @@ onMounted(load)
             @click="reanalyze"
           >
             <span v-if="reanalyzing" class="row" style="gap:8px;"><span class="spinner"></span> Анализ…</span>
-            <span v-else>↻ Анализ</span>
+            <span v-else class="btn-inline"><RotateCcw :size="14" /> Анализ</span>
           </button>
-          <button class="danger" :disabled="reanalyzing || retranscribing" @click="remove">Удалить</button>
+          <button class="danger btn-inline" :disabled="reanalyzing || retranscribing" @click="remove"><Trash2 :size="14" /> Удалить</button>
         </div>
       </div>
 
@@ -349,7 +350,7 @@ onMounted(load)
             <h2>Сильные стороны</h2>
             <ul v-if="item.sales_analysis.analysis.strengths.length" class="sw-list strengths">
               <li v-for="(s, i) in item.sales_analysis.analysis.strengths" :key="i">
-                <span class="sw-mark">✓</span><span>{{ s }}</span>
+                <span class="sw-mark"><Check :size="11" /></span><span>{{ s }}</span>
               </li>
             </ul>
             <div v-else class="empty-inline">Не выделены.</div>
@@ -425,7 +426,7 @@ onMounted(load)
               :key="i"
               class="task"
             >
-              <div class="task-icon">🎯</div>
+              <div class="task-icon"><Target :size="16" /></div>
               <div class="task-body">
                 <div class="task-title">{{ task.title }}</div>
                 <div class="task-meta">
@@ -440,8 +441,9 @@ onMounted(load)
         <div v-if="item.source === 'bitrix_chat'" class="card transcript-card transcript-full">
           <div class="card-head">
             <h2>Переписка</h2>
-            <button class="ghost small" @click="copyText">
-              {{ copied ? '✓ Скопировано' : 'Копировать' }}
+            <button class="ghost small btn-inline" @click="copyText">
+              <Check v-if="copied" :size="13" />
+              {{ copied ? 'Скопировано' : 'Копировать' }}
             </button>
           </div>
           <div v-if="chatMessages.length" class="chat-thread">
@@ -461,8 +463,9 @@ onMounted(load)
         <div v-else class="card transcript-card transcript-full">
           <div class="card-head">
             <h2>Транскрипт</h2>
-            <button class="ghost small" @click="copyText">
-              {{ copied ? '✓ Скопировано' : 'Копировать' }}
+            <button class="ghost small btn-inline" @click="copyText">
+              <Check v-if="copied" :size="13" />
+              {{ copied ? 'Скопировано' : 'Копировать' }}
             </button>
           </div>
           <div v-if="item.text" class="transcript">{{ item.text }}</div>
@@ -475,8 +478,9 @@ onMounted(load)
         <div class="card transcript-card">
           <div class="card-head">
             <h2>Transcript</h2>
-            <button class="ghost small" @click="copyText">
-              {{ copied ? '✓ Copied' : 'Copy' }}
+            <button class="ghost small btn-inline" @click="copyText">
+              <Check v-if="copied" :size="13" />
+              {{ copied ? 'Copied' : 'Copy' }}
             </button>
           </div>
           <div v-if="item.text" class="transcript">{{ item.text }}</div>
@@ -662,7 +666,7 @@ h2 {
   background: var(--brand);
   color: #fff;
   border-bottom-right-radius: 4px;
-  box-shadow: 0 8px 22px -10px rgba(3, 129, 254, 0.55);
+  box-shadow: 0 8px 22px -10px rgba(20, 184, 166, 0.55);
 }
 
 /* ===== OKO Sales Analysis ===== */
@@ -673,7 +677,7 @@ h2 {
   gap: 32px;
   margin-bottom: 18px;
   background:
-    radial-gradient(600px 200px at 0% 0%, rgba(3, 129, 254, 0.08), transparent 70%),
+    radial-gradient(600px 200px at 0% 0%, rgba(20, 184, 166, 0.08), transparent 70%),
     var(--surface);
 }
 .oko-hero-left { flex: 1; min-width: 0; }

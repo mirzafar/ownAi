@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { AudioLines } from 'lucide-vue-next'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -31,12 +32,17 @@ async function submit() {
 
 <template>
   <div class="auth-page">
-    <div class="auth-card card">
+    <div class="auth-bg">
+      <div class="blob blob-1"></div>
+      <div class="blob blob-2"></div>
+    </div>
+
+    <div class="auth-card">
       <div class="logo-wrap">
-        <div class="logo">🎙️</div>
+        <div class="logo"><AudioLines :size="28" /></div>
       </div>
-      <h1 class="title">Регистрация</h1>
-      <p class="subtitle">Создайте аккаунт в <b>ownAi</b> и начните анализировать аудио.</p>
+      <h1 class="title">Создайте аккаунт</h1>
+      <p class="subtitle">Начните анализировать звонки с <b>ownAi</b> уже сегодня.</p>
 
       <form @submit.prevent="submit" class="col" style="gap:14px;">
         <div>
@@ -54,7 +60,7 @@ async function submit() {
 
         <div v-if="error" class="error-msg">{{ error }}</div>
 
-        <button class="primary" type="submit" :disabled="loading">
+        <button class="primary auth-submit" type="submit" :disabled="loading">
           <span v-if="!loading">Создать аккаунт</span>
           <span v-else class="row" style="justify-content:center;"><span class="spinner"></span></span>
         </button>
@@ -70,28 +76,50 @@ async function submit() {
 
 <style scoped>
 .auth-page {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 24px;
+  overflow: hidden;
 }
+.auth-bg { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.5; }
+.blob-1 {
+  width: 460px; height: 460px;
+  background: radial-gradient(circle, #2DD4BF 0%, transparent 70%);
+  top: -120px; left: -120px;
+}
+.blob-2 {
+  width: 520px; height: 520px;
+  background: radial-gradient(circle, #EC4899 0%, transparent 70%);
+  bottom: -160px; right: -140px;
+  opacity: 0.35;
+}
+
 .auth-card {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 440px;
-  padding: 36px;
-}
-.logo-wrap { display: flex; justify-content: center; margin-bottom: 12px; }
-.logo {
-  width: 64px; height: 64px;
+  background: #ffffff;
+  border: 1px solid var(--border);
   border-radius: 20px;
+  padding: 36px;
+  box-shadow: var(--shadow-lg);
+}
+.logo-wrap { display: flex; justify-content: center; margin-bottom: 16px; }
+.logo {
+  width: 56px; height: 56px;
+  border-radius: 16px;
   background: var(--brand-grad);
+  color: #fff;
   display: grid; place-items: center;
-  font-size: 32px;
-  box-shadow: 0 16px 40px -12px rgba(3, 129, 254, 0.45);
+  box-shadow: 0 16px 40px -12px rgba(20, 184, 166, 0.45);
 }
 .title {
-  font-size: 26px;
-  font-weight: 800;
+  font-size: 24px;
+  font-weight: 700;
   letter-spacing: -0.02em;
   text-align: center;
   margin: 6px 0 6px;
@@ -100,8 +128,9 @@ async function submit() {
   font-size: 14px;
   color: var(--text-dim);
   text-align: center;
-  margin: 0 0 26px;
+  margin: 0 0 24px;
 }
+.auth-submit { width: 100%; padding: 13px 18px; }
 .alt {
   text-align: center;
   font-size: 14px;
