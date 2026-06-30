@@ -38,9 +38,6 @@ async function submit() {
           <div class="brand-mark"><AudioLines :size="20" /></div>
           <span class="brand-name">ownAi</span>
         </div>
-        <h2 class="hero-title">
-          Понимай каждый <span class="grad">звонок</span>.<br />Разговоры — в инсайты.
-        </h2>
         <p class="hero-text">
           AI-аналитика звонков и чатов. Отслеживайте качество работы операторов,
           тональность диалогов и точность скриптов в одном месте.
@@ -71,10 +68,6 @@ async function submit() {
       </div>
 
       <div class="auth-card">
-        <div class="auth-card-head">
-          <h1 class="title">С возвращением</h1>
-          <p class="subtitle">Войдите в свою учётную запись</p>
-        </div>
 
         <form @submit.prevent="submit" class="col" style="gap:14px;">
           <div>
@@ -94,7 +87,6 @@ async function submit() {
           </button>
         </form>
 
-        <p class="alt">Нет аккаунта? <router-link to="/register">Зарегистрироваться</router-link></p>
       </div>
     </div>
   </div>
