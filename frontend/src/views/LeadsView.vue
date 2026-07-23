@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import { useToastStore } from '../stores/toast'
 import {
   Search, ClipboardList, RefreshCw, RotateCcw, Sparkles, Check,
   ChevronLeft, ChevronRight,
@@ -9,6 +10,7 @@ import {
 
 const router = useRouter()
 const route = useRoute()
+const toast = useToastStore()
 
 const PAGE_SIZE = 20
 
@@ -248,7 +250,7 @@ async function startAnalysis(lead, event) {
     await api.post(`/bitrix/leads/${lead.id}/analyze`)
   } catch (e) {
     lead.analysis_status = 'failed'
-    // Не пугаем пользователя ошибкой здесь — если кликнут в детали лида, увидит причину
+    toast.fromError(e, 'Не удалось запустить анализ', 'Анализ лида')
   } finally {
     analyzingLeads.value.delete(lead.id)
   }

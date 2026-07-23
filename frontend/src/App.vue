@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import AppHeader from './components/AppHeader.vue'
 import TopNavbar from './components/TopNavbar.vue'
 import BackgroundTasks from './components/BackgroundTasks.vue'
+import ToastHost from './components/ToastHost.vue'
 
 const route = useRoute()
 const showChrome = computed(() => !!route.meta?.auth)
@@ -23,6 +24,7 @@ const showChrome = computed(() => !!route.meta?.auth)
       </main>
     </div>
     <BackgroundTasks />
+    <ToastHost />
   </div>
 </template>
 

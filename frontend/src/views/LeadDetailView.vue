@@ -2,12 +2,14 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
+import { useToastStore } from '../stores/toast'
 import {
   ArrowLeft, ArrowRight, RotateCcw, Sparkles, X, Play, MessageSquare,
 } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToastStore()
 
 const lead = ref(null)
 const loading = ref(true)
@@ -74,6 +76,7 @@ async function runAnalysis(force = false) {
     if (data.status === 'processing') startPolling()
   } catch (e) {
     analysisError.value = e.response?.data?.detail || 'Не удалось запустить анализ'
+    toast.fromError(e, 'Не удалось запустить анализ', 'Анализ лида')
   }
 }
 
@@ -140,7 +143,7 @@ const hasAnalyzableActivity = computed(() => {
 const analyzeDisabledReason = computed(() => {
   if (analysisRunning.value) return ''
   if (activityLoading.value) return 'Загрузка активности…'
-  if (!hasAnalyzableActivity.value) return 'По лиду нет звонков и комментариев — нечего анализировать'
+  if (!hasAnalyzableActivity.value) return 'По данному лиду нет звонков и комментариев для анализа'
   return ''
 })
 

@@ -1051,7 +1051,7 @@ async def analyze_lead(
         comments = []
 
     if not raw_calls and not comments:
-        raise HTTPException(status_code=400, detail="По лиду нет звонков и комментариев — нечего анализировать.")
+        raise HTTPException(status_code=400, detail="По данному лиду нет звонков и комментариев для анализа")
 
     now = datetime.now(timezone.utc)
     statuses_map = {s.status_id: s.name for s in await _fetch_lead_statuses()}
