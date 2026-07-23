@@ -69,6 +69,10 @@ function isActive(prefix) {
         <span>Чаты</span>
         <span class="soon">скоро</span>
       </router-link>
+      <router-link to="/leads" class="nav-link" :class="{ active: isActive('/leads') }">
+        <ClipboardList class="ico" />
+        <span>Лиды</span>
+      </router-link>
       <router-link to="/analyses" class="nav-link" :class="{ active: isActive('/analyses') || isActive('/t') }">
         <Sparkles class="ico" />
         <span>Анализы</span>
@@ -80,10 +84,6 @@ function isActive(prefix) {
       <router-link to="/operators" class="nav-link" :class="{ active: isActive('/operators') }">
         <Headphones class="ico" />
         <span>Операторы</span>
-      </router-link>
-      <router-link to="/leads" class="nav-link" :class="{ active: isActive('/leads') }">
-        <ClipboardList class="ico" />
-        <span>Лиды</span>
       </router-link>
       <router-link
         v-if="auth.user?.is_admin"
