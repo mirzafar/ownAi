@@ -14,6 +14,62 @@ const days = ref(5)
 
 const managerId = computed(() => decodeURIComponent(route.params.id))
 
+// ── Лиды по статусам (данные из Bitrix, коллекция lead_status_events) ──
+function todayStr(offsetDays = 0) {
+  const d = new Date()
+  d.setDate(d.getDate() - offsetDays)
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, '0'),
+    String(d.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+const lsFrom = ref(todayStr())
+const lsTo = ref(todayStr())
+const leadStatus = ref(null)
+const lsLoading = ref(false)
+const lsError = ref('')
+
+// Вкладки: 'analysis' — анализ звонков (грузится сразу), 'leadStatus' —
+// лиды по статусам из Bitrix (грузится лениво, только при первом открытии).
+const activeTab = ref('analysis')
+function setTab(t) {
+  activeTab.value = t
+  if (t === 'leadStatus' && !leadStatus.value && !lsLoading.value) {
+    loadLeadStatus()
+  }
+}
+
+async function loadLeadStatus() {
+  lsLoading.value = true
+  lsError.value = ''
+  try {
+    const { data } = await api.get(
+      `/analytics/operators/${encodeURIComponent(managerId.value)}/lead-status`,
+      { params: { date_from: lsFrom.value, date_to: lsTo.value } }
+    )
+    leadStatus.value = data
+  } catch (e) {
+    lsError.value = e.response?.data?.detail || 'Не удалось загрузить аналитику по лидам'
+  } finally {
+    lsLoading.value = false
+  }
+}
+
+function lsQuick(days) {
+  lsFrom.value = todayStr(days - 1)
+  lsTo.value = todayStr()
+  loadLeadStatus()
+}
+
+function semClass(s) {
+  return { P: 'work', S: 'win', F: 'lose' }[s] || 'work'
+}
+function semLabel(s) {
+  return { P: 'в работе', S: 'успех', F: 'провал' }[s] || ''
+}
+
 // Полная серия по дням (с заполнением пропусков), хронологически по возрастанию.
 const series = computed(() => {
   if (!detail.value) return []
@@ -170,6 +226,12 @@ async function load() {
 }
 
 watch(() => route.params.id, load)
+watch(() => route.params.id, () => {
+  // Смена оператора — сбрасываем лениво загруженные данные; перезагружаем
+  // только если вкладка со статусами сейчас открыта.
+  leadStatus.value = null
+  if (activeTab.value === 'leadStatus') loadLeadStatus()
+})
 watch(days, load)
 
 function fmtDate(s) {
@@ -280,6 +342,89 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- ── Вкладки ─────────────────────────────────────────────── -->
+      <div class="tabs">
+        <button class="tab" :class="{ active: activeTab === 'analysis' }" @click="setTab('analysis')">
+          Анализ звонков
+        </button>
+        <button class="tab" :class="{ active: activeTab === 'leadStatus' }" @click="setTab('leadStatus')">
+          Лиды по статусам
+        </button>
+      </div>
+
+      <!-- ── Панель: Лиды по статусам (Bitrix) ─────────────────────── -->
+      <div class="tab-panel" v-show="activeTab === 'leadStatus'">
+      <div class="section">
+        <div class="section-head">
+          <h2 class="section-title">Лиды по статусам</h2>
+          <div class="ls-controls">
+            <div class="ls-chips">
+              <button class="day-btn" @click="lsQuick(1)">Сегодня</button>
+              <button class="day-btn" @click="lsQuick(7)">7 дн.</button>
+              <button class="day-btn" @click="lsQuick(30)">30 дн.</button>
+            </div>
+            <div class="ls-range">
+              <input type="date" v-model="lsFrom" @change="loadLeadStatus" />
+              <span class="ls-dash">—</span>
+              <input type="date" v-model="lsTo" @change="loadLeadStatus" />
+            </div>
+          </div>
+        </div>
+
+        <div v-if="lsError" class="error-msg" style="margin-bottom:12px;">{{ lsError }}</div>
+        <div v-if="lsLoading" class="loading"><span class="spinner"></span> Загрузка…</div>
+
+        <template v-else-if="leadStatus">
+          <div class="ls-summary">
+            <div class="ls-kpi card">
+              <div class="ls-kpi-val">{{ leadStatus.total_leads }}</div>
+              <div class="ls-kpi-cap">уникальных лидов сменили статус</div>
+            </div>
+            <div class="ls-kpi card">
+              <div class="ls-kpi-val">{{ leadStatus.total_changes }}</div>
+              <div class="ls-kpi-cap">всего переходов</div>
+            </div>
+          </div>
+
+          <div v-if="!leadStatus.by_status.length" class="empty card small">
+            За выбранный период смен статусов у оператора не было.
+          </div>
+
+          <div v-else class="ls-table card">
+            <div class="ls-row ls-head">
+              <div class="ls-c-status">Статус</div>
+              <div class="ls-c-num">Лидов</div>
+              <div class="ls-c-num">Переходов</div>
+            </div>
+            <div v-for="b in leadStatus.by_status" :key="b.status_id" class="ls-row">
+              <div class="ls-c-status">
+                <span class="ls-sem" :class="semClass(b.semantic)"></span>
+                {{ b.status_name }}
+                <span v-if="semLabel(b.semantic)" class="ls-sem-lbl">{{ semLabel(b.semantic) }}</span>
+              </div>
+              <div class="ls-c-num"><b>{{ b.leads }}</b></div>
+              <div class="ls-c-num">{{ b.changes }}</div>
+            </div>
+          </div>
+
+          <details v-if="leadStatus.transitions.length" class="ls-details card">
+            <summary>Переходы ({{ leadStatus.transitions.length }})</summary>
+            <div class="ls-tr" v-for="(t, i) in leadStatus.transitions" :key="i">
+              <span class="ls-tr-lead">Лид #{{ t.lead_id }}</span>
+              <span class="ls-tr-flow">
+                {{ t.from_status_name || '—' }}
+                <ArrowRight :size="12" style="vertical-align:middle;" />
+                {{ t.to_status_name }}
+              </span>
+              <span class="ls-tr-date">{{ fmtDate(t.changed_at) }}</span>
+            </div>
+          </details>
+        </template>
+      </div>
+      </div>
+
+      <!-- ── Панель: Анализ звонков ────────────────────────────────── -->
+      <div class="tab-panel" v-show="activeTab === 'analysis'">
       <div class="section">
         <div class="section-head">
           <h2 class="section-title">Динамика за последние {{ detail.period_days }} дней</h2>
@@ -500,6 +645,7 @@ onMounted(load)
             <button class="ghost" @click.stop="router.push(`/t/${item.id}`)">Открыть</button>
           </div>
         </div>
+      </div>
       </div>
     </template>
   </div>
@@ -792,8 +938,97 @@ onMounted(load)
 }
 .row-item button { padding: 7px 12px; font-size: 12px; flex-shrink: 0; }
 
+/* ── Вкладки ──────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 10px 18px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+  border-radius: 0;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+
+/* ── Лиды по статусам ─────────────────────────────────────────── */
+.ls-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ls-chips { display: flex; gap: 6px; }
+.ls-range { display: flex; align-items: center; gap: 8px; }
+.ls-range input[type="date"] {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+}
+.ls-dash { color: var(--text-muted); }
+
+.ls-summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 14px; }
+.ls-kpi { padding: 18px 20px; }
+.ls-kpi-val {
+  font-size: 30px; font-weight: 800; letter-spacing: -0.02em;
+  background: var(--brand-grad);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.ls-kpi-cap { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+.ls-table { padding: 0; overflow: hidden; }
+.ls-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 110px;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ls-row:last-child { border-bottom: none; }
+.ls-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-muted); font-weight: 700;
+  background: var(--surface-2);
+}
+.ls-c-status { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.ls-c-num { text-align: right; font-size: 14px; }
+.ls-c-num b { font-weight: 800; }
+.ls-sem { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ls-sem.work { background: var(--brand); }
+.ls-sem.win { background: var(--success); }
+.ls-sem.lose { background: var(--danger); }
+.ls-sem-lbl { font-size: 11px; color: var(--text-muted); }
+
+.ls-details { margin-top: 14px; padding: 14px 20px; }
+.ls-details summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-dim); }
+.ls-tr {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.ls-tr:last-child { border-bottom: none; }
+.ls-tr-lead { color: var(--text-muted); font-weight: 600; }
+.ls-tr-date { color: var(--text-muted); white-space: nowrap; }
+
 @media (max-width: 800px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
+  .ls-summary { grid-template-columns: 1fr; }
   .row-item button { display: none; }
   .profile { flex-wrap: wrap; }
   .trend-side { gap: 12px; }

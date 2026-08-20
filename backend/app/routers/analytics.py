@@ -9,8 +9,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import get_current_user
-from ..models import AnalyticsOverview, OperatorDetail, OperatorStat
+from ..models import AnalyticsOverview, LeadStatusAnalytics, OperatorDetail, OperatorStat
 from ..services import analysis_service as svc
+from ..services import lead_status_service
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -51,3 +52,15 @@ async def operator_detail(
     user=Depends(get_current_user),
 ) -> OperatorDetail:
     return await svc.operator_detail(user["_id"], manager_id, days)
+
+
+@router.get("/operators/{manager_id}/lead-status", response_model=LeadStatusAnalytics)
+async def operator_lead_status(
+    manager_id: str,
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD (по умолчанию сегодня)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD (по умолчанию = date_from)"),
+    user=Depends(get_current_user),
+) -> LeadStatusAnalytics:
+    """Аналитика смен статусов лидов по оператору за период (данные из Bitrix,
+    синхронизируются cron-ом в коллекцию lead_status_events)."""
+    return await lead_status_service.operator_lead_status(manager_id, date_from, date_to)

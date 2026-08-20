@@ -232,6 +232,33 @@ class OperatorDetail(BaseModel):
     analyses: List[AnalysisOut] = []
 
 
+class LeadStatusBucket(BaseModel):
+    """Сколько лидов оператор перевёл В данный статус за период."""
+    status_id: str
+    status_name: str
+    semantic: str = ""               # P / S / F
+    leads: int = 0                   # уникальных лидов, дошедших до статуса
+    changes: int = 0                 # всего переходов в статус
+
+
+class LeadStatusTransition(BaseModel):
+    lead_id: str
+    from_status_name: str = ""
+    to_status_name: str = ""
+    changed_at: Optional[datetime] = None
+
+
+class LeadStatusAnalytics(BaseModel):
+    manager_id: str
+    manager: str = ""
+    date_from: str                   # YYYY-MM-DD
+    date_to: str                     # YYYY-MM-DD
+    total_leads: int = 0             # уникальных лидов со сменой статуса за период
+    total_changes: int = 0           # всего переходов
+    by_status: List[LeadStatusBucket] = []
+    transitions: List[LeadStatusTransition] = []
+
+
 class CriterionAverage(BaseModel):
     id: str
     name: str

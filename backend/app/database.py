@@ -14,6 +14,7 @@ db = client[settings.mongo_db]
 
 users = db["users"]
 analyses = db["analyses"]
+lead_status_events = db["lead_status_events"]   # история смены статусов лидов (из Bitrix, синк по cron)
 system_meta = db["system_meta"]   # одноразовые маркеры миграций и тд
 audio_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="call_audio")
 
@@ -60,6 +61,11 @@ async def ensure_indexes() -> None:
             "lead.bitrix_lead_id": {"$type": "string"},
         },
     )
+
+    # ── lead_status_events: история смены статусов лидов (портал-глобально) ──
+    # Основная выборка аналитики — по оператору за диапазон дней.
+    await lead_status_events.create_index([("operator_id", 1), ("day", 1)])
+    await lead_status_events.create_index([("day", 1)])
 
     # ── Одноразовая чистка legacy + удаление мусорного маркера ───────────────
     # Маркер раньше клали в коллекцию users — теперь чистим, чтобы он не
