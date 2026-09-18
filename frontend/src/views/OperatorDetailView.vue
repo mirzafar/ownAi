@@ -70,6 +70,79 @@ function semLabel(s) {
   return { P: 'в работе', S: 'успех', F: 'провал' }[s] || ''
 }
 
+// Линейный график «Лиды по статусам»: две серии (Лидов / Переходов),
+// по оси X — статусы в порядке возвращённом бэкендом.
+const lsChart = computed(() => {
+  const data = leadStatus.value?.by_status || []
+  if (!data.length) return null
+  const W = 720
+  const H = 280
+  const padL = 34
+  const padR = 18
+  const padT = 22
+  const padB = 64
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+
+  const n = data.length
+  const xStep = n > 1 ? innerW / (n - 1) : 0
+  const x = i => padL + (n > 1 ? i * xStep : innerW / 2)
+
+  const maxV = Math.max(1, ...data.map(d => Math.max(d.leads || 0, d.changes || 0)))
+  // «Красивый» верхний предел с запасом сверху.
+  const top = Math.ceil(maxV * 1.15) || 1
+  const y = v => padT + innerH - (v / top) * innerH
+
+  const mk = key => data.map((d, i) => ({
+    i, cx: x(i), cy: y(d[key] || 0), v: d[key] || 0, d,
+  }))
+  const leadsPts = mk('leads')
+  const changesPts = mk('changes')
+
+  const tension = 0.35
+  function smoothPath(seg, { closeBottom = false, baseY = 0 } = {}) {
+    if (seg.length < 2) return seg.length === 1 && closeBottom
+      ? `M ${seg[0].cx} ${baseY} L ${seg[0].cx} ${seg[0].cy} Z` : ''
+    const cmds = [`M ${seg[0].cx} ${seg[0].cy}`]
+    for (let i = 0; i < seg.length - 1; i++) {
+      const p0 = seg[i - 1] || seg[i]
+      const p1 = seg[i]
+      const p2 = seg[i + 1]
+      const p3 = seg[i + 2] || p2
+      const c1x = p1.cx + (p2.cx - p0.cx) * tension
+      const c1y = p1.cy + (p2.cy - p0.cy) * tension
+      const c2x = p2.cx - (p3.cx - p1.cx) * tension
+      const c2y = p2.cy - (p3.cy - p1.cy) * tension
+      cmds.push(`C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2.cx} ${p2.cy}`)
+    }
+    if (closeBottom) {
+      cmds.push(`L ${seg[seg.length - 1].cx} ${baseY}`)
+      cmds.push(`L ${seg[0].cx} ${baseY}`)
+      cmds.push('Z')
+    }
+    return cmds.join(' ')
+  }
+
+  const baseY = padT + innerH
+  const leadsLine = smoothPath(leadsPts)
+  const leadsArea = smoothPath(leadsPts, { closeBottom: true, baseY })
+  const changesLine = smoothPath(changesPts)
+
+  const ticks = 4
+  const yTicks = Array.from({ length: ticks + 1 }, (_, k) => {
+    const v = Math.round((top / ticks) * k)
+    return { v, y: y(v) }
+  })
+
+  const labels = data.map((d, i) => ({
+    x: x(i),
+    name: d.status_name || '',
+    sem: d.semantic,
+  }))
+
+  return { W, H, baseY, padL, leadsPts, changesPts, leadsLine, leadsArea, changesLine, yTicks, labels }
+})
+
 // Полная серия по дням (с заполнением пропусков), хронологически по возрастанию.
 const series = computed(() => {
   if (!detail.value) return []
@@ -390,20 +463,61 @@ onMounted(load)
             За выбранный период смен статусов у оператора не было.
           </div>
 
-          <div v-else class="ls-table card">
-            <div class="ls-row ls-head">
-              <div class="ls-c-status">Статус</div>
-              <div class="ls-c-num">Лидов</div>
-              <div class="ls-c-num">Переходов</div>
+          <div v-else class="ls-chart card">
+            <div class="ls-legend">
+              <span class="ls-lg"><span class="ls-lg-dot leads"></span>Лидов</span>
+              <span class="ls-lg"><span class="ls-lg-dot changes"></span>Переходов</span>
             </div>
-            <div v-for="b in leadStatus.by_status" :key="b.status_id" class="ls-row">
-              <div class="ls-c-status">
-                <span class="ls-sem" :class="semClass(b.semantic)"></span>
-                {{ b.status_name }}
-                <span v-if="semLabel(b.semantic)" class="ls-sem-lbl">{{ semLabel(b.semantic) }}</span>
-              </div>
-              <div class="ls-c-num"><b>{{ b.leads }}</b></div>
-              <div class="ls-c-num">{{ b.changes }}</div>
+            <div class="ls-chart-host" v-if="lsChart">
+              <svg :viewBox="`0 0 ${lsChart.W} ${lsChart.H}`" class="ls-svg">
+                <defs>
+                  <linearGradient id="lsArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#14B8A6" stop-opacity="0.30" />
+                    <stop offset="100%" stop-color="#14B8A6" stop-opacity="0" />
+                  </linearGradient>
+                  <linearGradient id="lsLeadsLine" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stop-color="#33a0ff" />
+                    <stop offset="100%" stop-color="#14B8A6" />
+                  </linearGradient>
+                </defs>
+
+                <!-- сетка + подписи оси Y -->
+                <g class="ls-grid">
+                  <line
+                    v-for="t in lsChart.yTicks" :key="'g' + t.v"
+                    :x1="lsChart.padL" :x2="lsChart.W - 18"
+                    :y1="t.y" :y2="t.y"
+                  />
+                  <text
+                    v-for="t in lsChart.yTicks" :key="'t' + t.v"
+                    :x="lsChart.padL - 8" :y="t.y + 3" text-anchor="end" class="ls-axis"
+                  >{{ t.v }}</text>
+                </g>
+
+                <!-- заливка + линия «Лидов» -->
+                <path :d="lsChart.leadsArea" fill="url(#lsArea)" />
+                <path :d="lsChart.leadsLine" fill="none" stroke="url(#lsLeadsLine)" stroke-width="2.5" stroke-linecap="round" />
+                <!-- линия «Переходов» (пунктир, приглушённая) -->
+                <path :d="lsChart.changesLine" fill="none" stroke="var(--brand)" stroke-width="2" stroke-dasharray="5 5" stroke-opacity="0.45" stroke-linecap="round" />
+
+                <!-- точки + значения «Лидов» -->
+                <g v-for="p in lsChart.leadsPts" :key="'lp' + p.i">
+                  <circle :cx="p.cx" :cy="p.cy" r="3.5" fill="#14B8A6" stroke="var(--surface)" stroke-width="2" />
+                  <text :x="p.cx" :y="p.cy - 9" text-anchor="middle" class="ls-pt-val">{{ p.v }}</text>
+                </g>
+                <!-- точки «Переходов» -->
+                <circle
+                  v-for="p in lsChart.changesPts" :key="'cp' + p.i"
+                  :cx="p.cx" :cy="p.cy" r="2.5" fill="var(--brand)" fill-opacity="0.5"
+                />
+
+                <!-- подписи статусов по оси X -->
+                <text
+                  v-for="(l, i) in lsChart.labels" :key="'x' + i"
+                  :x="l.x" :y="lsChart.baseY + 22" text-anchor="middle"
+                  class="ls-axis ls-xlabel" :class="semClass(l.sem)"
+                >{{ l.name.length > 12 ? l.name.slice(0, 11) + '…' : l.name }}</text>
+              </svg>
             </div>
           </div>
 
@@ -988,23 +1102,28 @@ onMounted(load)
 }
 .ls-kpi-cap { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
-.ls-table { padding: 0; overflow: hidden; }
-.ls-row {
-  display: grid;
-  grid-template-columns: 1fr 90px 110px;
-  align-items: center;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
+/* Линейный график «Лиды по статусам» */
+.ls-chart { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.ls-legend { display: flex; gap: 18px; }
+.ls-lg { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-muted); }
+.ls-lg-dot { width: 14px; height: 4px; border-radius: 2px; flex-shrink: 0; }
+.ls-lg-dot.leads { background: var(--brand); }
+.ls-lg-dot.changes {
+  background: repeating-linear-gradient(
+    90deg, var(--brand) 0 4px, transparent 4px 8px);
+  opacity: .55;
 }
-.ls-row:last-child { border-bottom: none; }
-.ls-head {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-muted); font-weight: 700;
-  background: var(--surface-2);
-}
-.ls-c-status { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.ls-c-num { text-align: right; font-size: 14px; }
-.ls-c-num b { font-weight: 800; }
+
+.ls-chart-host { width: 100%; }
+.ls-svg { width: 100%; height: 280px; display: block; overflow: visible; }
+.ls-grid line { stroke: var(--border); stroke-width: 1; }
+.ls-axis { fill: var(--text-muted); font-size: 11px; }
+.ls-pt-val { fill: var(--text); font-size: 11px; font-weight: 700; }
+.ls-xlabel { font-size: 11px; font-weight: 600; }
+.ls-xlabel.work { fill: var(--text-dim); }
+.ls-xlabel.win { fill: var(--success); }
+.ls-xlabel.lose { fill: var(--danger); }
+
 .ls-sem { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .ls-sem.work { background: var(--brand); }
 .ls-sem.win { background: var(--success); }
